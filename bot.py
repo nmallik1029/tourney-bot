@@ -5,6 +5,7 @@ import uuid
 import json
 import re
 import asyncio
+import urllib.parse
 from pathlib import Path
 from aiohttp import web
 
@@ -39,7 +40,6 @@ SCORES = {
     "bo5": ["3-0", "3-1", "3-2"],
 }
 
-# Pending registrations: user_id -> { tournament_id, selected_users }
 pending_registrations: dict[int, dict] = {}
 
 
@@ -190,8 +190,6 @@ class SignupView(discord.ui.View):
             return
 
         team_size = t["team_size"]
-
-        # Build user select menus — one per player slot
         view = PlayerSelectView(tournament_id=t_id, team_size=team_size)
         player_labels = ["Captain"] + [f"Player {i}" for i in range(2, team_size + 1)]
         instructions = "\n".join(f"**Slot {i+1} — {label}**" for i, label in enumerate(player_labels))
@@ -209,7 +207,7 @@ class PlayerSelectView(discord.ui.View):
         super().__init__(timeout=300)
         self.tournament_id = tournament_id
         self.team_size = team_size
-        self.selected_users: dict[int, discord.Member] = {}  # slot_index -> member
+        self.selected_users: dict[int, discord.Member] = {}
 
         player_labels = ["Captain"] + [f"Player {i}" for i in range(2, team_size + 1)]
         for i, label in enumerate(player_labels):
@@ -217,7 +215,6 @@ class PlayerSelectView(discord.ui.View):
 
     @discord.ui.button(label="Next: Enter IGNs", style=discord.ButtonStyle.primary, row=4)
     async def next_step(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check all slots filled
         if len(self.selected_users) < self.team_size:
             await interaction.response.send_message(
                 f"Please select all {self.team_size} players before continuing.",
@@ -225,13 +222,11 @@ class PlayerSelectView(discord.ui.View):
             )
             return
 
-        # Store selected users in pending
         pending_registrations[interaction.user.id] = {
             "tournament_id": self.tournament_id,
             "selected_users": {i: m for i, m in self.selected_users.items()},
         }
 
-        # Build IGN modal with one field per player
         modal = IGNModal(
             tournament_id=self.tournament_id,
             selected_users=self.selected_users,
@@ -244,7 +239,7 @@ class PlayerUserSelect(discord.ui.UserSelect):
     def __init__(self, slot_index: int, label: str):
         super().__init__(
             placeholder=f"Select {label}...",
-            row=min(slot_index, 3),  # max row 3 to leave row 4 for button
+            row=min(slot_index, 3),
         )
         self.slot_index = slot_index
 
@@ -261,7 +256,6 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
         self.selected_users = selected_users
         self.team_size = team_size
 
-        # Team name field
         self.team_name_field = discord.ui.TextInput(
             label="Team Name",
             placeholder="Enter your team name",
@@ -269,10 +263,9 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
         )
         self.add_item(self.team_name_field)
 
-        # One IGN field per player (up to 4 more fields = 5 total)
         self.ign_fields = []
         player_labels = ["Captain"] + [f"Player {i}" for i in range(2, team_size + 1)]
-        for i, label in enumerate(player_labels[:4]):  # modal max 5 fields
+        for i, label in enumerate(player_labels[:4]):
             field = discord.ui.TextInput(
                 label=f"{label} IGN",
                 placeholder=f"In-game name for {selected_users.get(i, 'this player')}",
@@ -289,7 +282,6 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
 
         team_name = self.team_name_field.value.strip()
         players = []
-        player_labels_all = ["Captain"] + [f"Player {i}" for i in range(2, self.team_size + 1)]
 
         for i, label, field in self.ign_fields:
             member = self.selected_users.get(i)
@@ -313,7 +305,6 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
         tournaments[self.tournament_id]["teams"].append(team_entry)
         save_tournaments()
 
-        # Post to #signups
         signups_ch = interaction.guild.get_channel(t["signups_channel_id"])
         if signups_ch:
             embed = build_team_embed(team_entry, self.tournament_id, interaction.user.name)
@@ -355,7 +346,6 @@ class EditRosterView(discord.ui.View):
             await interaction.response.send_message("Sign-ups are closed. The roster can no longer be edited.", ephemeral=True)
             return
 
-        # Re-open player select with current team size
         view = EditPlayerSelectView(
             tournament_id=self.tournament_id,
             team_id=self.team_id,
@@ -461,7 +451,6 @@ class EditIGNModal(discord.ui.Modal, title="Update Team Name & IGNs"):
         team["players"] = new_players
         save_tournaments()
 
-        # Update embed in #signups
         signups_ch = interaction.guild.get_channel(t["signups_channel_id"])
         if signups_ch and team.get("signup_message_id"):
             try:
@@ -800,8 +789,6 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         return web.Response(status=400, text="Invalid JSON")
 
     event_type = payload.get("type")
-
-    # Only care about match_end events
     if event_type != "match_end":
         return web.Response(status=200, text="ok")
 
@@ -813,7 +800,6 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     if len(teams) < 2 or winner_team_num is None:
         return web.Response(status=200, text="ok")
 
-    # Find teams by name in registered tournaments
     team1_name = teams[0]["name"]
     team2_name = teams[1]["name"]
 
@@ -823,7 +809,7 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
 
     for t_id, t in tournaments.items():
         if t.get("open"):
-            continue  # tournament hasn't started
+            continue
         if not t.get("updates_channel_id"):
             continue
 
@@ -841,7 +827,6 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         print(f"[Webhook] No tournament match found for teams: {team1_name} vs {team2_name}")
         return web.Response(status=200, text="ok")
 
-    # Determine winner and loser
     winner_krunker = next((tm for tm in teams if tm["team"] == winner_team_num), None)
     loser_krunker = next((tm for tm in teams if tm["team"] != winner_team_num), None)
 
@@ -855,42 +840,27 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     loser_score = loser_krunker["score"]
     score_str = f"{winner_score}-{loser_score}"
 
-    # Build updates embed
     embed = discord.Embed(
         description=f"## **{winner_discord['team_name']}** won {score_str} against **{loser_discord['team_name']}**",
         color=0x2B2D31,
     )
     embed.add_field(name="Map", value=map_name, inline=True)
 
-    # Player stats table
     winner_players = [p for p in players if p["team"] == winner_team_num]
     loser_players = [p for p in players if p["team"] != winner_team_num]
 
     def player_stats_text(player_list):
         lines = []
         for p in player_list:
-            lines.append(
-                f"`{p['name']}` — {p['kills']}K / {p['deaths']}D  •  {p['accuracy']}% acc"
-            )
+            lines.append(f"`{p['name']}` — {p['kills']}K / {p['deaths']}D  •  {p['accuracy']}% acc")
         return "\n".join(lines) if lines else "No data"
 
-    embed.add_field(
-        name=f"{winner_discord['team_name']} (W)",
-        value=player_stats_text(winner_players),
-        inline=False,
-    )
-    embed.add_field(
-        name=f"{loser_discord['team_name']} (L)",
-        value=player_stats_text(loser_players),
-        inline=False,
-    )
+    embed.add_field(name=f"{winner_discord['team_name']} (W)", value=player_stats_text(winner_players), inline=False)
+    embed.add_field(name=f"{loser_discord['team_name']} (L)", value=player_stats_text(loser_players), inline=False)
 
-    # Post to updates channel
-    guild = None
     for g in bot.guilds:
         ch = g.get_channel(matched_tournament["updates_channel_id"])
         if ch:
-            guild = g
             await ch.send(embed=embed)
             print(f"[Webhook] Posted result: {winner_discord['team_name']} won {score_str} vs {loser_discord['team_name']}")
             break
@@ -909,7 +879,6 @@ async def start_webhook_server():
 
 
 # ── Pick/Ban system ────────────────────────────────────────────────────────────
-
 MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
 
 MAP_IDS = {
@@ -924,44 +893,25 @@ MAP_IDS = {
 
 WEBHOOK_URL = "https://tourney-bot-production.up.railway.app/krunker"
 
-# Pick/ban sequences per format
-# Each step: (team_index 0=upper/1=lower, action "ban"/"pick")
 PB_SEQUENCES = {
     "bo1": [
         (0, "ban"), (1, "ban"), (0, "ban"), (1, "ban"), (0, "ban"), (1, "ban"),
-        # last map is decider
     ],
     "bo3": [
         (0, "ban"), (1, "ban"),
         (0, "pick"), (1, "pick"),
         (0, "ban"), (1, "ban"),
-        # last map is decider
     ],
     "bo5": [
         (0, "ban"), (0, "ban"),
         (0, "pick"), (1, "pick"), (0, "pick"), (1, "pick"),
-        # last map is decider
     ],
 }
 
-# Active matches: channel_id -> match state
 active_matches: dict[int, dict] = {}
 
 
-def build_host_url(team1: str, team2: str, map_name: str, team_size: str) -> str:
-    import urllib.parse
-    params = {
-        "action": "host-comp",
-        "mapId": MAP_IDS.get(map_name, map_name),
-        "team1Name": team1,
-        "team2Name": team2,
-        "teamSize": team_size,
-        "webhook": WEBHOOK_URL,
-    }
-    return "glorp://game?" + urllib.parse.urlencode(params)
-
-
-def get_current_step(match: dict) -> tuple[int, str] | None:
+def get_current_step(match: dict):
     seq = PB_SEQUENCES[match["format"]]
     step = match["step"]
     if step < len(seq):
@@ -983,19 +933,16 @@ def build_pickban_embed(match: dict) -> discord.Embed:
         color=0x2B2D31,
     )
 
-    # Remaining maps
     embed.add_field(
         name="Available Maps",
         value=" | ".join(f"~~{m}~~" if m not in remaining else m for m in MAPS),
         inline=False,
     )
 
-    # Picked maps so far
     if picked:
         picked_str = "\n".join(f"Map {i+1}: **{m}**" for i, m in enumerate(picked))
         embed.add_field(name="Maps Selected", value=picked_str, inline=False)
 
-    # Current action
     if step < len(seq):
         team_idx, action = seq[step]
         current_team = match["teams"][team_idx]
@@ -1006,13 +953,8 @@ def build_pickban_embed(match: dict) -> discord.Embed:
             inline=False,
         )
     else:
-        # All steps done, last map is decider
         decider = remaining[0] if remaining else "Unknown"
-        embed.add_field(
-            name="Decider Map",
-            value=f"**{decider}**",
-            inline=False,
-        )
+        embed.add_field(name="Decider Map", value=f"**{decider}**", inline=False)
 
     return embed
 
@@ -1030,7 +972,6 @@ class PickBanView(discord.ui.View):
 
         step_info = get_current_step(match)
         if step_info is None:
-            # All steps done — show host buttons
             for i, map_name in enumerate(match["picked_maps"]):
                 self.add_item(HostMapButton(
                     match_id=self.match_id,
@@ -1039,7 +980,6 @@ class PickBanView(discord.ui.View):
                     label=f"Host Map {i+1}: {map_name}",
                     disabled=i != match.get("current_map_index", 0),
                 ))
-            # Add decider button
             decider = match["remaining_maps"][0] if match["remaining_maps"] else None
             if decider:
                 total = len(match["picked_maps"])
@@ -1110,19 +1050,15 @@ class MapActionButton(discord.ui.Button):
             match["picked_maps"].append(self.map_name)
             match["step"] += 1
 
-        # Check if all steps done
         next_step = get_current_step(match)
         if next_step is None:
-            # Done — set current map index to 0 for hosting
             match["current_map_index"] = 0
 
-        # Rebuild view and update message
         view = PickBanView(match_id=self.match_id)
         view.rebuild()
         embed = build_pickban_embed(match)
         await interaction.response.edit_message(embed=embed, view=view)
 
-        # If done, post final map list summary
         if next_step is None:
             decider = match["remaining_maps"][0] if match["remaining_maps"] else None
             all_maps = match["picked_maps"] + ([decider] if decider else [])
@@ -1134,6 +1070,22 @@ class MapActionButton(discord.ui.Button):
                 color=0x00FF7F,
             )
             await interaction.channel.send(embed=summary)
+
+
+class HostClientView(discord.ui.View):
+    def __init__(self, glorp_url: str, crankshaft_url: str, map_name: str):
+        super().__init__(timeout=60)
+        self.glorp_url = glorp_url
+        self.crankshaft_url = crankshaft_url
+        self.map_name = map_name
+
+    @discord.ui.button(label="Open in Glorp", style=discord.ButtonStyle.primary)
+    async def open_glorp(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(self.glorp_url, ephemeral=True)
+
+    @discord.ui.button(label="Open in CrankShaft", style=discord.ButtonStyle.secondary)
+    async def open_crankshaft(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(self.crankshaft_url, ephemeral=True)
 
 
 class HostMapButton(discord.ui.Button):
@@ -1158,7 +1110,6 @@ class HostMapButton(discord.ui.Button):
         team2 = match["teams"][1]["name"]
         team_size = match["team_size"]
 
-        import urllib.parse
         params = {
             "action": "host-comp",
             "mapId": MAP_IDS.get(self.map_name, self.map_name),
@@ -1170,20 +1121,17 @@ class HostMapButton(discord.ui.Button):
         glorp_url = f"glorp://game?{query}"
         crankshaft_url = f"crankshaft://game?{query}"
 
+        view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url, map_name=self.map_name)
         await interaction.response.send_message(
-            f"**Host Map: {self.map_name}**\n\n"
-            f"Glorp: {glorp_url}\n\n"
-            f"CrankShaft: {crankshaft_url}",
+            f"**Host Map: {self.map_name}** — Choose your client:",
+            view=view,
             ephemeral=True,
         )
 
-        # Advance to next map
         match["current_map_index"] = self.map_index + 1
-
-        # Rebuild view with next button enabled
-        view = PickBanView(match_id=self.match_id)
-        view.rebuild()
-        await interaction.message.edit(view=view)
+        view2 = PickBanView(match_id=self.match_id)
+        view2.rebuild()
+        await interaction.message.edit(view=view2)
 
 
 # ── /match-create command ──────────────────────────────────────────────────────
@@ -1203,7 +1151,6 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
         await interaction.response.send_message("Format must be bo1, bo3, or bo5.", ephemeral=True)
         return
 
-    # Find both teams in active tournaments
     found_t1 = None
     found_t2 = None
     found_tournament = None
@@ -1222,19 +1169,15 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
 
     if not found_t1 or not found_t2:
         await interaction.response.send_message(
-            f"Could not find both teams. Make sure team names exactly match registration.",
+            "Could not find both teams. Make sure team names exactly match registration.",
             ephemeral=True,
         )
         return
 
-    # Get captain IDs
     t1_captain_id = found_t1["players"][0]["discord_id"]
     t2_captain_id = found_t2["players"][0]["discord_id"]
-
-    # Get team size from tournament format
     team_size = f"{found_tournament['team_size']}v{found_tournament['team_size']}"
 
-    # Get all player IDs for channel permissions
     t1_player_ids = [p["discord_id"] for p in found_t1["players"]]
     t2_player_ids = [p["discord_id"] for p in found_t2["players"]]
     all_player_ids = t1_player_ids + t2_player_ids
@@ -1242,7 +1185,6 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
     guild = interaction.guild
     staff_role = guild.get_role(STAFF_ROLE_ID)
 
-    # Build channel overwrites
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
@@ -1250,7 +1192,6 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
     if staff_role:
         overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-    # All players can view, only captains can interact (send messages)
     for pid in all_player_ids:
         member = guild.get_member(pid)
         if member:
