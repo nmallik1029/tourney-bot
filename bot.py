@@ -1165,16 +1165,15 @@ class HostMapButton(discord.ui.Button):
             "team1Name": team1,
             "team2Name": team2,
             "teamSize": team_size,
-            "webhook": WEBHOOK_URL,
         }
-        query = urllib.parse.urlencode(params)
+        query = urllib.parse.urlencode(params) + f"&webhook={WEBHOOK_URL}"
         glorp_url = f"glorp://game?{query}"
         crankshaft_url = f"crankshaft://game?{query}"
 
         await interaction.response.send_message(
             f"**Host Map: {self.map_name}**\n\n"
-            f"[Open in Glorp]({glorp_url})\n"
-            f"[Open in CrankShaft]({crankshaft_url})",
+            f"Glorp: {glorp_url}\n\n"
+            f"CrankShaft: {crankshaft_url}",
             ephemeral=True,
         )
 
