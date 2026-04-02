@@ -908,8 +908,406 @@ async def start_webhook_server():
     print(f"Webhook server running on port {WEBHOOK_PORT}")
 
 
+# ── Pick/Ban system ────────────────────────────────────────────────────────────
+
+MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
+
+MAP_IDS = {
+    "Bureau": "Bureau",
+    "Lush": "Lush",
+    "Site": "Site",
+    "Industry": "Industry",
+    "Undergrowth": "Undergrowth",
+    "Sandstorm": "Sandstorm",
+    "Burg": "Burg",
+}
+
+WEBHOOK_URL = "https://tourney-bot-production.up.railway.app/krunker"
+
+# Pick/ban sequences per format
+# Each step: (team_index 0=upper/1=lower, action "ban"/"pick")
+PB_SEQUENCES = {
+    "bo1": [
+        (0, "ban"), (1, "ban"), (0, "ban"), (1, "ban"), (0, "ban"), (1, "ban"),
+        # last map is decider
+    ],
+    "bo3": [
+        (0, "ban"), (1, "ban"),
+        (0, "pick"), (1, "pick"),
+        (0, "ban"), (1, "ban"),
+        # last map is decider
+    ],
+    "bo5": [
+        (0, "ban"), (0, "ban"),
+        (0, "pick"), (1, "pick"), (0, "pick"), (1, "pick"),
+        # last map is decider
+    ],
+}
+
+# Active matches: channel_id -> match state
+active_matches: dict[int, dict] = {}
+
+
+def build_host_url(team1: str, team2: str, map_name: str, team_size: str) -> str:
+    import urllib.parse
+    params = {
+        "action": "host-comp",
+        "mapId": MAP_IDS.get(map_name, map_name),
+        "team1Name": team1,
+        "team2Name": team2,
+        "teamSize": team_size,
+        "webhook": WEBHOOK_URL,
+    }
+    return "glorp://game?" + urllib.parse.urlencode(params)
+
+
+def get_current_step(match: dict) -> tuple[int, str] | None:
+    seq = PB_SEQUENCES[match["format"]]
+    step = match["step"]
+    if step < len(seq):
+        return seq[step]
+    return None
+
+
+def build_pickban_embed(match: dict) -> discord.Embed:
+    fmt = match["format"].upper()
+    team1 = match["teams"][0]
+    team2 = match["teams"][1]
+    remaining = match["remaining_maps"]
+    picked = match["picked_maps"]
+    step = match["step"]
+    seq = PB_SEQUENCES[match["format"]]
+
+    embed = discord.Embed(
+        title=f"{team1['name']} vs {team2['name']} — {fmt} Map Selection",
+        color=0x2B2D31,
+    )
+
+    # Remaining maps
+    embed.add_field(
+        name="Available Maps",
+        value=" | ".join(f"~~{m}~~" if m not in remaining else m for m in MAPS),
+        inline=False,
+    )
+
+    # Picked maps so far
+    if picked:
+        picked_str = "\n".join(f"Map {i+1}: **{m}**" for i, m in enumerate(picked))
+        embed.add_field(name="Maps Selected", value=picked_str, inline=False)
+
+    # Current action
+    if step < len(seq):
+        team_idx, action = seq[step]
+        current_team = match["teams"][team_idx]
+        action_str = "BAN" if action == "ban" else "PICK"
+        embed.add_field(
+            name="Current Turn",
+            value=f"**{current_team['name']}** — {action_str} a map",
+            inline=False,
+        )
+    else:
+        # All steps done, last map is decider
+        decider = remaining[0] if remaining else "Unknown"
+        embed.add_field(
+            name="Decider Map",
+            value=f"**{decider}**",
+            inline=False,
+        )
+
+    return embed
+
+
+class PickBanView(discord.ui.View):
+    def __init__(self, match_id: str):
+        super().__init__(timeout=None)
+        self.match_id = match_id
+
+    def rebuild(self):
+        self.clear_items()
+        match = active_matches.get(self.match_id)
+        if not match:
+            return
+
+        step_info = get_current_step(match)
+        if step_info is None:
+            # All steps done — show host buttons
+            for i, map_name in enumerate(match["picked_maps"]):
+                self.add_item(HostMapButton(
+                    match_id=self.match_id,
+                    map_index=i,
+                    map_name=map_name,
+                    label=f"Host Map {i+1}: {map_name}",
+                    disabled=i != match.get("current_map_index", 0),
+                ))
+            # Add decider button
+            decider = match["remaining_maps"][0] if match["remaining_maps"] else None
+            if decider:
+                total = len(match["picked_maps"])
+                self.add_item(HostMapButton(
+                    match_id=self.match_id,
+                    map_index=total,
+                    map_name=decider,
+                    label=f"Host Map {total+1}: {decider} (Decider)",
+                    disabled=total != match.get("current_map_index", 0),
+                ))
+            return
+
+        team_idx, action = step_info
+        current_captain_id = match["teams"][team_idx]["captain_id"]
+
+        for map_name in match["remaining_maps"]:
+            if action == "ban":
+                self.add_item(MapActionButton(
+                    match_id=self.match_id,
+                    map_name=map_name,
+                    action="ban",
+                    captain_id=current_captain_id,
+                    label=f"Ban {map_name}",
+                    style=discord.ButtonStyle.danger,
+                ))
+            else:
+                self.add_item(MapActionButton(
+                    match_id=self.match_id,
+                    map_name=map_name,
+                    action="pick",
+                    captain_id=current_captain_id,
+                    label=f"Pick {map_name}",
+                    style=discord.ButtonStyle.success,
+                ))
+
+
+class MapActionButton(discord.ui.Button):
+    def __init__(self, match_id, map_name, action, captain_id, label, style):
+        super().__init__(label=label, style=style, custom_id=f"pb_{match_id}_{map_name}_{action}")
+        self.match_id = match_id
+        self.map_name = map_name
+        self.action = action
+        self.captain_id = captain_id
+
+    async def callback(self, interaction: discord.Interaction):
+        match = active_matches.get(self.match_id)
+        if not match:
+            await interaction.response.send_message("Match not found.", ephemeral=True)
+            return
+
+        step_info = get_current_step(match)
+        if not step_info:
+            await interaction.response.send_message("Pick/ban is already complete.", ephemeral=True)
+            return
+
+        team_idx, action = step_info
+        current_captain_id = match["teams"][team_idx]["captain_id"]
+
+        if interaction.user.id != current_captain_id:
+            await interaction.response.send_message("It's not your turn.", ephemeral=True)
+            return
+
+        if self.action == "ban":
+            match["remaining_maps"].remove(self.map_name)
+            match["step"] += 1
+        elif self.action == "pick":
+            match["remaining_maps"].remove(self.map_name)
+            match["picked_maps"].append(self.map_name)
+            match["step"] += 1
+
+        # Check if all steps done
+        next_step = get_current_step(match)
+        if next_step is None:
+            # Done — set current map index to 0 for hosting
+            match["current_map_index"] = 0
+
+        # Rebuild view and update message
+        view = PickBanView(match_id=self.match_id)
+        view.rebuild()
+        embed = build_pickban_embed(match)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+        # If done, post final map list summary
+        if next_step is None:
+            decider = match["remaining_maps"][0] if match["remaining_maps"] else None
+            all_maps = match["picked_maps"] + ([decider] if decider else [])
+            maps_str = "\n".join(f"{i+1}. {m}" for i, m in enumerate(all_maps))
+            fmt = match["format"].upper()
+            summary = discord.Embed(
+                title=f"{match['teams'][0]['name']} vs {match['teams'][1]['name']}",
+                description=f"**Type: {fmt}**\n\n**Maps Selected:**\n{maps_str}",
+                color=0x00FF7F,
+            )
+            await interaction.channel.send(embed=summary)
+
+
+class HostMapButton(discord.ui.Button):
+    def __init__(self, match_id, map_index, map_name, label, disabled):
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary,
+            custom_id=f"host_{match_id}_{map_index}",
+            disabled=disabled,
+        )
+        self.match_id = match_id
+        self.map_index = map_index
+        self.map_name = map_name
+
+    async def callback(self, interaction: discord.Interaction):
+        match = active_matches.get(self.match_id)
+        if not match:
+            await interaction.response.send_message("Match not found.", ephemeral=True)
+            return
+
+        team1 = match["teams"][0]["name"]
+        team2 = match["teams"][1]["name"]
+        team_size = match["team_size"]
+
+        import urllib.parse
+        params = {
+            "action": "host-comp",
+            "mapId": MAP_IDS.get(self.map_name, self.map_name),
+            "team1Name": team1,
+            "team2Name": team2,
+            "teamSize": team_size,
+            "webhook": WEBHOOK_URL,
+        }
+        query = urllib.parse.urlencode(params)
+        glorp_url = f"glorp://game?{query}"
+        crankshaft_url = f"crankshaft://game?{query}"
+
+        await interaction.response.send_message(
+            f"**Host Map: {self.map_name}**\n\n"
+            f"[Open in Glorp]({glorp_url})\n"
+            f"[Open in CrankShaft]({crankshaft_url})",
+            ephemeral=True,
+        )
+
+        # Advance to next map
+        match["current_map_index"] = self.map_index + 1
+
+        # Rebuild view with next button enabled
+        view = PickBanView(match_id=self.match_id)
+        view.rebuild()
+        await interaction.message.edit(view=view)
+
+
+# ── /match-create command ──────────────────────────────────────────────────────
+@bot.tree.command(
+    name="match-create",
+    description="Start a pick/ban for a match between two teams.",
+    guild=discord.Object(id=SERVER_ID),
+)
+@app_commands.describe(
+    team1="Name of the higher seed team (bans first)",
+    team2="Name of the lower seed team",
+    format="Match format: bo1, bo3, or bo5",
+)
+async def match_create(interaction: discord.Interaction, team1: str, team2: str, format: str):
+    fmt = format.lower()
+    if fmt not in PB_SEQUENCES:
+        await interaction.response.send_message("Format must be bo1, bo3, or bo5.", ephemeral=True)
+        return
+
+    # Find both teams in active tournaments
+    found_t1 = None
+    found_t2 = None
+    found_tournament = None
+
+    for t_id, t in tournaments.items():
+        if t.get("open"):
+            continue
+        teams = t.get("teams", [])
+        t1 = next((tm for tm in teams if tm["team_name"].strip().lower() == team1.strip().lower()), None)
+        t2 = next((tm for tm in teams if tm["team_name"].strip().lower() == team2.strip().lower()), None)
+        if t1 and t2:
+            found_t1 = t1
+            found_t2 = t2
+            found_tournament = t
+            break
+
+    if not found_t1 or not found_t2:
+        await interaction.response.send_message(
+            f"Could not find both teams. Make sure team names exactly match registration.",
+            ephemeral=True,
+        )
+        return
+
+    # Get captain IDs
+    t1_captain_id = found_t1["players"][0]["discord_id"]
+    t2_captain_id = found_t2["players"][0]["discord_id"]
+
+    # Get team size from tournament format
+    team_size = f"{found_tournament['team_size']}v{found_tournament['team_size']}"
+
+    # Get all player IDs for channel permissions
+    t1_player_ids = [p["discord_id"] for p in found_t1["players"]]
+    t2_player_ids = [p["discord_id"] for p in found_t2["players"]]
+    all_player_ids = t1_player_ids + t2_player_ids
+
+    guild = interaction.guild
+    staff_role = guild.get_role(STAFF_ROLE_ID)
+
+    # Build channel overwrites
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    # All players can view, only captains can interact (send messages)
+    for pid in all_player_ids:
+        member = guild.get_member(pid)
+        if member:
+            can_interact = pid in [t1_captain_id, t2_captain_id]
+            overwrites[member] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=can_interact,
+                add_reactions=False,
+            )
+
+    safe_t1 = re.sub(r"[^a-z0-9]", "", team1.lower())[:10]
+    safe_t2 = re.sub(r"[^a-z0-9]", "", team2.lower())[:10]
+    channel = await guild.create_text_channel(
+        name=f"pb-{safe_t1}-vs-{safe_t2}",
+        overwrites=overwrites,
+    )
+
+    match_id = str(uuid.uuid4())[:8]
+    match = {
+        "match_id": match_id,
+        "format": fmt,
+        "team_size": team_size,
+        "teams": [
+            {"name": found_t1["team_name"], "captain_id": t1_captain_id},
+            {"name": found_t2["team_name"], "captain_id": t2_captain_id},
+        ],
+        "remaining_maps": list(MAPS),
+        "picked_maps": [],
+        "step": 0,
+        "current_map_index": 0,
+        "channel_id": channel.id,
+        "tournament_id": found_tournament["id"],
+        "updates_channel_id": found_tournament.get("updates_channel_id"),
+    }
+    active_matches[match_id] = match
+
+    view = PickBanView(match_id=match_id)
+    view.rebuild()
+    embed = build_pickban_embed(match)
+
+    await channel.send(
+        f"<@{t1_captain_id}> <@{t2_captain_id}> — Map selection has begun!\n"
+        f"**{found_t1['team_name']}** (upper seed) bans first.",
+        embed=embed,
+        view=view,
+    )
+
+    await interaction.response.send_message(
+        f"Match created in {channel.mention}",
+        ephemeral=True,
+    )
+
+
 # ── Run ────────────────────────────────────────────────────────────────────────
 async def main():
+    import os
     TOKEN = os.environ.get("DISCORD_TOKEN")
     async with bot:
         await start_webhook_server()
