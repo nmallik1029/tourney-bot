@@ -4,8 +4,9 @@ from discord.ext import commands
 import uuid
 import json
 import re
-import os
+import asyncio
 from pathlib import Path
+from aiohttp import web
 
 # ── Bot setup ──────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -787,5 +788,131 @@ async def on_ready():
     except Exception as e:
         print(f"Sync failed: {e}")
 
-TOKEN = os.environ.get("DISCORD_TOKEN")
-bot.run(TOKEN)
+
+# ── Webhook server ─────────────────────────────────────────────────────────────
+WEBHOOK_PORT = 5000
+
+
+async def handle_krunker_webhook(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.Response(status=400, text="Invalid JSON")
+
+    event_type = payload.get("type")
+
+    # Only care about match_end events
+    if event_type != "match_end":
+        return web.Response(status=200, text="ok")
+
+    teams = payload.get("teams", [])
+    players = payload.get("players", [])
+    winner_team_num = payload.get("winner")
+    map_name = payload.get("map", "Unknown")
+
+    if len(teams) < 2 or winner_team_num is None:
+        return web.Response(status=200, text="ok")
+
+    # Find teams by name in registered tournaments
+    team1_name = teams[0]["name"]
+    team2_name = teams[1]["name"]
+
+    matched_tournament = None
+    matched_team1 = None
+    matched_team2 = None
+
+    for t_id, t in tournaments.items():
+        if t.get("open"):
+            continue  # tournament hasn't started
+        if not t.get("updates_channel_id"):
+            continue
+
+        registered_teams = t.get("teams", [])
+        t1 = next((tm for tm in registered_teams if tm["team_name"].strip().lower() == team1_name.strip().lower()), None)
+        t2 = next((tm for tm in registered_teams if tm["team_name"].strip().lower() == team2_name.strip().lower()), None)
+
+        if t1 and t2:
+            matched_tournament = t
+            matched_team1 = t1
+            matched_team2 = t2
+            break
+
+    if not matched_tournament:
+        print(f"[Webhook] No tournament match found for teams: {team1_name} vs {team2_name}")
+        return web.Response(status=200, text="ok")
+
+    # Determine winner and loser
+    winner_krunker = next((tm for tm in teams if tm["team"] == winner_team_num), None)
+    loser_krunker = next((tm for tm in teams if tm["team"] != winner_team_num), None)
+
+    if not winner_krunker or not loser_krunker:
+        return web.Response(status=200, text="ok")
+
+    winner_discord = matched_team1 if matched_team1["team_name"].strip().lower() == winner_krunker["name"].strip().lower() else matched_team2
+    loser_discord = matched_team1 if winner_discord == matched_team2 else matched_team2
+
+    winner_score = winner_krunker["score"]
+    loser_score = loser_krunker["score"]
+    score_str = f"{winner_score}-{loser_score}"
+
+    # Build updates embed
+    embed = discord.Embed(
+        description=f"## **{winner_discord['team_name']}** won {score_str} against **{loser_discord['team_name']}**",
+        color=0x2B2D31,
+    )
+    embed.add_field(name="Map", value=map_name, inline=True)
+
+    # Player stats table
+    winner_players = [p for p in players if p["team"] == winner_team_num]
+    loser_players = [p for p in players if p["team"] != winner_team_num]
+
+    def player_stats_text(player_list):
+        lines = []
+        for p in player_list:
+            lines.append(
+                f"`{p['name']}` — {p['kills']}K / {p['deaths']}D  •  {p['accuracy']}% acc"
+            )
+        return "\n".join(lines) if lines else "No data"
+
+    embed.add_field(
+        name=f"{winner_discord['team_name']} (W)",
+        value=player_stats_text(winner_players),
+        inline=False,
+    )
+    embed.add_field(
+        name=f"{loser_discord['team_name']} (L)",
+        value=player_stats_text(loser_players),
+        inline=False,
+    )
+
+    # Post to updates channel
+    guild = None
+    for g in bot.guilds:
+        ch = g.get_channel(matched_tournament["updates_channel_id"])
+        if ch:
+            guild = g
+            await ch.send(embed=embed)
+            print(f"[Webhook] Posted result: {winner_discord['team_name']} won {score_str} vs {loser_discord['team_name']}")
+            break
+
+    return web.Response(status=200, text="ok")
+
+
+async def start_webhook_server():
+    app = web.Application()
+    app.router.add_post("/krunker", handle_krunker_webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
+    await site.start()
+    print(f"Webhook server running on port {WEBHOOK_PORT}")
+
+
+# ── Run ────────────────────────────────────────────────────────────────────────
+async def main():
+    TOKEN = os.environ.get("DISCORD_TOKEN")
+    async with bot:
+        await start_webhook_server()
+        await bot.start(TOKEN)
+
+asyncio.run(main())
