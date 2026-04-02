@@ -71,7 +71,7 @@ def draw_scoreboard(
     f_winner = make_font(26)
     f_col    = make_font(17)
 
-    ROW1_H = 60
+    ROW1_H = 70
     ROW2_H = 38
     top_h  = 16 + ROW1_H + ROW2_H + 16 + PADDING * 2
     total_h = top_h + HDR_H + n * ROW_H + PADDING
