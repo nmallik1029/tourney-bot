@@ -945,28 +945,42 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     loser_score = loser_krunker["score"]
     score_str = f"{winner_score}-{loser_score}"
 
-    embed = discord.Embed(
-        description=f"## **{winner_discord['team_name']}** won {score_str} against **{loser_discord['team_name']}**",
-        color=0x2B2D31,
+    winner_players = sorted(
+        [p for p in players if p["team"] == winner_team_num],
+        key=lambda p: p.get("score", 0), reverse=True
     )
-    embed.add_field(name="Map", value=map_name, inline=True)
+    loser_players = sorted(
+        [p for p in players if p["team"] != winner_team_num],
+        key=lambda p: p.get("score", 0), reverse=True
+    )
 
-    winner_players = [p for p in players if p["team"] == winner_team_num]
-    loser_players = [p for p in players if p["team"] != winner_team_num]
-
-    def player_stats_text(player_list):
-        lines = []
-        for p in player_list:
-            lines.append(f"`{p['name']}` — {p['kills']}K / {p['deaths']}D  •  {p['accuracy']}% acc")
-        return "\n".join(lines) if lines else "No data"
-
-    embed.add_field(name=f"{winner_discord['team_name']} (W)", value=player_stats_text(winner_players), inline=False)
-    embed.add_field(name=f"{loser_discord['team_name']} (L)", value=player_stats_text(loser_players), inline=False)
+    # Generate scoreboard image
+    try:
+        from scoreboard import draw_scoreboard, RED, WHITE
+        img_buf = draw_scoreboard(
+            tournament_name=matched_tournament["name"],
+            map_name=map_name,
+            team1_name=winner_discord["team_name"],
+            team1_score=winner_score,
+            team1_players=winner_players,
+            team1_color=RED,
+            team2_name=loser_discord["team_name"],
+            team2_score=loser_score,
+            team2_players=loser_players,
+            team2_color=WHITE,
+        )
+        image_file = discord.File(img_buf, filename="scoreboard.png")
+    except Exception as e:
+        print(f"[Scoreboard] Failed to generate image: {e}")
+        image_file = None
 
     for g in bot.guilds:
         ch = g.get_channel(matched_tournament["updates_channel_id"])
         if ch:
-            await ch.send(embed=embed)
+            if image_file:
+                await ch.send(file=image_file)
+            else:
+                await ch.send(f"**{winner_discord['team_name']}** won {score_str} against **{loser_discord['team_name']}**")
             print(f"[Webhook] Posted result: {winner_discord['team_name']} won {score_str} vs {loser_discord['team_name']}")
             break
 
