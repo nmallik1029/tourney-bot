@@ -31,7 +31,7 @@ def save_tournaments():
 tournaments: dict[str, dict] = load_tournaments()
 
 STAFF_ROLE_ID = 1489047073142739035
-SERVER_ID = 1281284958966644777
+SERVER_ID = 1489359260348579840
 
 SCORES = {
     "bo1": ["1-0"],
