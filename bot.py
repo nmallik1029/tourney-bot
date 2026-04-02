@@ -970,8 +970,11 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
             team2_color=WHITE,
         )
         image_file = discord.File(img_buf, filename="scoreboard.png")
+        print(f"[Scoreboard] Image generated successfully")
     except Exception as e:
         print(f"[Scoreboard] Failed to generate image: {e}")
+        import traceback
+        traceback.print_exc()
         image_file = None
 
     for g in bot.guilds:

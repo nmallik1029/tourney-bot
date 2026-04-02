@@ -2,39 +2,36 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 
-KRUNKER_FONT = os.path.join(os.path.dirname(__file__), "krunker_font.ttf")
+KRUNKER_FONT  = os.path.join(os.path.dirname(__file__), "krunker_font.ttf")
 FALLBACK_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 def make_font(size):
     try:
         return ImageFont.truetype(KRUNKER_FONT, size)
-    except Exception:
+    except:
         try:
             return ImageFont.truetype(FALLBACK_BOLD, size)
-        except Exception:
+        except:
             return ImageFont.load_default()
 
-# Colors
 RED      = (220, 50, 50)
 WHITE    = (255, 255, 255)
 GOLD     = (241, 196, 15)
 GRAY     = (160, 160, 175)
 GREEN    = (80, 220, 80)
 STAT_RED = (220, 60, 60)
-DIVIDER  = (80, 80, 100, 120)  # RGBA semi-transparent
 
-W       = 1100
-PADDING = 32
-ROW_H   = 48
+W       = 1200
+PADDING = 36
+ROW_H   = 50
 HDR_H   = 36
-
 C_NUM   = PADDING
-C_NAME  = PADDING + 52
-C_SCORE = 500
-C_KILLS = 630
-C_DEATH = 730
-C_OBJ   = 830
-C_DMG   = 950
+C_NAME  = PADDING + 55
+C_SCORE = 560
+C_KILLS = 680
+C_DEATH = 780
+C_OBJ   = 880
+C_DMG   = 1000
 
 BG_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "scoreboard_bg.png")
 
@@ -58,20 +55,29 @@ def draw_scoreboard(
     )
     all_players.sort(key=lambda x: x[0].get("score", 0), reverse=True)
 
-    # Find stat leaders
-    max_kills  = max((p.get("kills", 0)            for p, _ in all_players), default=0)
-    max_deaths = max((p.get("deaths", 0)           for p, _ in all_players), default=0)
-    max_obj    = max((p.get("objective_score", 0)  for p, _ in all_players), default=0)
-    max_dmg    = max((p.get("damage_done", 0)      for p, _ in all_players), default=0)
+    max_kills  = max((p.get("kills", 0)           for p, _ in all_players), default=0)
+    max_deaths = max((p.get("deaths", 0)          for p, _ in all_players), default=0)
+    max_obj    = max((p.get("objective_score", 0) for p, _ in all_players), default=0)
+    max_dmg    = max((p.get("damage_done", 0)     for p, _ in all_players), default=0)
 
     n = len(all_players)
-    top_h   = 155
-    total_h = top_h + HDR_H + n * ROW_H + PADDING * 2
 
-    # RGBA canvas — fully transparent background
+    f_tiny   = make_font(13)
+    f_small  = make_font(17)
+    f_reg    = make_font(20)
+    f_bold   = make_font(24)
+    f_map    = make_font(54)
+    f_teams  = make_font(26)
+    f_winner = make_font(26)
+    f_col    = make_font(17)
+
+    ROW1_H = 60
+    ROW2_H = 38
+    top_h  = 16 + ROW1_H + ROW2_H + 16 + PADDING * 2
+    total_h = top_h + HDR_H + n * ROW_H + PADDING
+
     img = Image.new("RGBA", (W, total_h), (0, 0, 0, 0))
 
-    # Optional background image
     if os.path.exists(BG_IMAGE_PATH):
         try:
             bg = Image.open(BG_IMAGE_PATH).convert("RGBA").resize((W, total_h))
@@ -82,60 +88,38 @@ def draw_scoreboard(
             pass
 
     draw = ImageDraw.Draw(img)
-
-    f_tiny  = make_font(13)
-    f_small = make_font(17)
-    f_reg   = make_font(20)
-    f_bold  = make_font(24)
-    f_map   = make_font(54)
-    f_teams = make_font(28)
-    f_col   = make_font(17)
-
     y = PADDING
 
     # Tournament name top-left
     draw.text((PADDING, y), tournament_name, font=f_tiny, fill=GRAY)
+    y += 18
 
-    # Map name centered
+    # Line 1: team1 (left, vertically centered) | map name (right, top-aligned)
+    bbox_t1 = draw.textbbox((0, 0), f"{team1_name} ({team1_score})", font=f_teams)
+    t1_y = y + (ROW1_H - (bbox_t1[3] - bbox_t1[1])) // 2
+    draw.text((PADDING, t1_y), f"{team1_name} ({team1_score})", font=f_teams, fill=team1_color)
+
     map_text = map_name.upper()
-    bbox = draw.textbbox((0, 0), map_text, font=f_map)
-    mx = (W - (bbox[2] - bbox[0])) // 2
-    draw.text((mx, y - 8), map_text, font=f_map, fill=WHITE)
-    y += 62
+    bbox_map = draw.textbbox((0, 0), map_text, font=f_map)
+    draw.text((W - PADDING - (bbox_map[2] - bbox_map[0]), y), map_text, font=f_map, fill=WHITE)
+    y += ROW1_H
 
-    # Team names + MATCH OVER
-    t1_text = f"{team1_name} ({team1_score})"
-    draw.text((PADDING, y), t1_text, font=f_teams, fill=team1_color)
+    # Line 2: team2 (left) | winner line (right)
+    draw.text((PADDING, y), f"{team2_name} ({team2_score})", font=f_teams, fill=team2_color)
 
-    t2_text = f"({team2_score}) {team2_name}"
-    bbox = draw.textbbox((0, 0), t2_text, font=f_teams)
-    draw.text((W - PADDING - (bbox[2] - bbox[0]), y), t2_text, font=f_teams, fill=team2_color)
-    y += 44
-
-    # Winner line — team name in gold, rest in white
     winner = team1_name if team1_score > team2_score else team2_name
     series = f"{max(team1_score, team2_score)}-{min(team1_score, team2_score)}"
+    after  = f" wins the series {series}!"
+    bbox_w = draw.textbbox((0, 0), winner, font=f_winner)
+    bbox_a = draw.textbbox((0, 0), after,  font=f_winner)
+    total_w = (bbox_w[2] - bbox_w[0]) + (bbox_a[2] - bbox_a[0])
+    wx = W - PADDING - total_w
+    draw.text((wx, y), winner, font=f_winner, fill=GOLD)
+    wx += bbox_w[2] - bbox_w[0]
+    draw.text((wx, y), after, font=f_winner, fill=WHITE)
+    y += ROW2_H + 16
 
-    before = f""
-    mid = f"{winner}"
-    after = f" wins the series {series}!"
-
-    # Draw each part separately to color just the name
-    x = PADDING
-    bbox_b = draw.textbbox((0, 0), before, font=f_bold)
-    bbox_m = draw.textbbox((0, 0), mid, font=f_bold)
-    bbox_a = draw.textbbox((0, 0), after, font=f_bold)
-    total_w = (bbox_b[2]-bbox_b[0]) + (bbox_m[2]-bbox_m[0]) + (bbox_a[2]-bbox_a[0])
-    x = (W - total_w) // 2
-
-    draw.text((x, y), before, font=f_bold, fill=WHITE)
-    x += bbox_b[2] - bbox_b[0]
-    draw.text((x, y), mid, font=f_bold, fill=GOLD)
-    x += bbox_m[2] - bbox_m[0]
-    draw.text((x, y), after, font=f_bold, fill=WHITE)
-    y += 40
-
-    # Column headers — no background, just text
+    # Column headers
     headers = [
         (C_NUM,   "#"),
         (C_NAME,  "Name"),
@@ -147,52 +131,26 @@ def draw_scoreboard(
     ]
     for cx, label in headers:
         draw.text((cx, y + 8), label, font=f_col, fill=GRAY)
-
-    # Divider under headers
     draw.line([(PADDING, y + HDR_H - 1), (W - PADDING, y + HDR_H - 1)], fill=(120, 120, 150, 200), width=1)
     y += HDR_H
 
     # Player rows
     for i, (p, color) in enumerate(all_players):
         text_y = y + (ROW_H - 22) // 2
-
         kills  = p.get("kills", 0)
         deaths = p.get("deaths", 0)
         obj    = p.get("objective_score", 0)
-        dmg    = p.get("damage_done", 0)
+        dmg    = int(p.get("damage_done", 0))
         score  = p.get("score", 0)
 
-        # Row number
         draw.text((C_NUM,   text_y), f"{i+1}.", font=f_small, fill=GRAY)
-
-        # Player name in team color
-        draw.text((C_NAME,  text_y), p.get("name", "")[:24], font=f_bold, fill=color)
-
-        # Score always white
+        draw.text((C_NAME,  text_y), p.get("name", "")[:26], font=f_bold, fill=color)
         draw.text((C_SCORE, text_y), str(score),  font=f_reg, fill=WHITE)
-
-        # Kills — green if highest
-        kills_color = GREEN if kills == max_kills and kills > 0 else WHITE
-        draw.text((C_KILLS, text_y), str(kills),  font=f_reg, fill=kills_color)
-
-        # Deaths — red if highest
-        deaths_color = STAT_RED if deaths == max_deaths and deaths > 0 else WHITE
-        draw.text((C_DEATH, text_y), str(deaths), font=f_reg, fill=deaths_color)
-
-        # Obj — green if highest
-        obj_color = GREEN if obj == max_obj and obj > 0 else WHITE
-        draw.text((C_OBJ,   text_y), str(obj),    font=f_reg, fill=obj_color)
-
-        # Dmg — green if highest
-        dmg_color = GREEN if dmg == max_dmg and dmg > 0 else WHITE
-        draw.text((C_DMG,   text_y), str(dmg),    font=f_reg, fill=dmg_color)
-
-        # Divider line between rows
-        draw.line(
-            [(PADDING, y + ROW_H - 1), (W - PADDING, y + ROW_H - 1)],
-            fill=(80, 80, 100, 100),
-            width=1,
-        )
+        draw.text((C_KILLS, text_y), str(kills),  font=f_reg, fill=GREEN    if kills  == max_kills  and kills  > 0 else WHITE)
+        draw.text((C_DEATH, text_y), str(deaths), font=f_reg, fill=STAT_RED if deaths == max_deaths and deaths > 0 else WHITE)
+        draw.text((C_OBJ,   text_y), str(obj),    font=f_reg, fill=GREEN    if obj    == max_obj    and obj    > 0 else WHITE)
+        draw.text((C_DMG,   text_y), str(dmg),    font=f_reg, fill=GREEN    if dmg    == int(max_dmg) and dmg  > 0 else WHITE)
+        draw.line([(PADDING, y + ROW_H - 1), (W - PADDING, y + ROW_H - 1)], fill=(80, 80, 100, 100), width=1)
         y += ROW_H
 
     buf = io.BytesIO()
@@ -203,27 +161,26 @@ def draw_scoreboard(
 
 if __name__ == "__main__":
     t1 = [
-        {"name": "TheseWalls", "score": 6655, "kills": 45, "deaths": 30, "objective_score": 1340, "damage_done": 4183},
-        {"name": "PulseFN",    "score": 6085, "kills": 37, "deaths": 39, "objective_score": 1340, "damage_done": 4582},
-        {"name": "Lvpez",      "score": 5920, "kills": 40, "deaths": 41, "objective_score": 1070, "damage_done": 3781},
-        {"name": "rckyyyyyy",  "score": 5805, "kills": 37, "deaths": 30, "objective_score": 1540, "damage_done": 3659},
+        {"name": "AraffyWappy",   "score": 3910, "kills": 29, "deaths": 21, "objective_score": 610, "damage_done": 3004},
+        {"name": "LESHAWN",       "score": 3130, "kills": 23, "deaths": 23, "objective_score": 430, "damage_done": 2099},
+        {"name": "TravisScottAl", "score": 2865, "kills": 20, "deaths": 21, "objective_score": 550, "damage_done": 1634},
+        {"name": "mcyy",          "score": 2535, "kills": 23, "deaths": 31, "objective_score": 220, "damage_done": 1991},
     ]
     t2 = [
-        {"name": "VollerPlays", "score": 5950, "kills": 41, "deaths": 43, "objective_score": 1210, "damage_done": 4694},
-        {"name": "HypeZeus",    "score": 5870, "kills": 41, "deaths": 50, "objective_score": 880,  "damage_done": 4926},
-        {"name": "MemoMINI",    "score": 5745, "kills": 41, "deaths": 47, "objective_score": 910,  "damage_done": 4836},
-        {"name": "ECODOT",      "score": 4890, "kills": 36, "deaths": 53, "objective_score": 920,  "damage_done": 4257},
+        {"name": "LESHAWN",       "score": 380,  "kills": 3,  "deaths": 1,  "objective_score": 30,  "damage_done": 214},
+        {"name": "TravisScottAl", "score": 165,  "kills": 1,  "deaths": 2,  "objective_score": 90,  "damage_done": 95},
+        {"name": "Player3",       "score": 120,  "kills": 1,  "deaths": 3,  "objective_score": 40,  "damage_done": 80},
+        {"name": "Player4",       "score": 90,   "kills": 0,  "deaths": 2,  "objective_score": 20,  "damage_done": 50},
     ]
-
     buf = draw_scoreboard(
         tournament_name="FRVR X NACK $700 4v4 Tournament",
-        map_name="Bureau",
-        team1_name="PPB",
+        map_name="Sandstorm",
+        team1_name="CEAF OWNERS",
         team1_score=2,
         team1_players=t1,
         team1_color=RED,
-        team2_name="Kalashnikov",
-        team2_score=1,
+        team2_name="A Very Long Team Name Here",
+        team2_score=0,
         team2_players=t2,
         team2_color=WHITE,
     )
