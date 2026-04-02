@@ -29,6 +29,17 @@ def save_tournaments():
     with open(TOURNAMENTS_FILE, "w") as f:
         json.dump(tournaments, f, indent=2, default=str)
 
+def load_config() -> dict:
+    config_file = Path("config.json")
+    if config_file.exists():
+        with open(config_file, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_config(data: dict):
+    with open("config.json", "w") as f:
+        json.dump(data, f, indent=2)
+
 tournaments: dict[str, dict] = load_tournaments()
 
 STAFF_ROLE_ID = 1489047073142739035
@@ -46,6 +57,15 @@ pending_registrations: dict[int, dict] = {}
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def safe_channel_name(name: str) -> str:
     return re.sub(r"[^a-z0-9\-]", "", name.lower().replace(" ", "-"))
+
+
+def get_categories(guild: discord.Guild):
+    config = load_config()
+    t_cat_id = config.get("tournament_category_id")
+    a_cat_id = config.get("admin_category_id")
+    t_cat = guild.get_channel(t_cat_id) if t_cat_id else None
+    a_cat = guild.get_channel(a_cat_id) if a_cat_id else None
+    return t_cat, a_cat
 
 
 def build_team_embed(team: dict, tournament_id: str, submitter_name: str) -> discord.Embed:
@@ -79,6 +99,87 @@ def find_tournament_by_matches_channel(channel_id: int):
 def team_label(team: dict) -> str:
     captain = team["players"][0]
     return f"{team['team_name']} (cap: {captain['ign']})"
+
+
+# ── /tournament-setup ──────────────────────────────────────────────────────────
+class TournamentCategorySelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(
+            placeholder="Tournament channels (signups, updates, matches, pick/ban)...",
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.tournament_category_id = int(self.values[0])
+        await interaction.response.defer()
+
+
+class AdminCategorySelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(
+            placeholder="Admin channels (tournament-admin)...",
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.admin_category_id = int(self.values[0])
+        await interaction.response.defer()
+
+
+class SetupView(discord.ui.View):
+    def __init__(self, options):
+        super().__init__(timeout=120)
+        self.tournament_category_id = None
+        self.admin_category_id = None
+        self.add_item(TournamentCategorySelect(options))
+        self.add_item(AdminCategorySelect(options))
+
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=2)
+    async def save(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.tournament_category_id or not self.admin_category_id:
+            await interaction.response.send_message("Please select both categories before saving.", ephemeral=True)
+            return
+
+        save_config({
+            "tournament_category_id": self.tournament_category_id,
+            "admin_category_id": self.admin_category_id,
+        })
+
+        t_cat = interaction.guild.get_channel(self.tournament_category_id)
+        a_cat = interaction.guild.get_channel(self.admin_category_id)
+
+        await interaction.response.send_message(
+            f"Setup saved!\n"
+            f"Tournament channels → **{t_cat.name if t_cat else 'Unknown'}**\n"
+            f"Admin channels → **{a_cat.name if a_cat else 'Unknown'}**",
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(
+    name="tournament-setup",
+    description="Configure which categories tournament channels are placed in.",
+    guild=discord.Object(id=SERVER_ID),
+)
+async def tournament_setup(interaction: discord.Interaction):
+    categories = interaction.guild.categories
+    if not categories:
+        await interaction.response.send_message("No categories found in this server.", ephemeral=True)
+        return
+
+    options = [
+        discord.SelectOption(label=cat.name[:100], value=str(cat.id))
+        for cat in categories[:25]
+    ]
+
+    view = SetupView(options=options)
+    await interaction.response.send_message(
+        "**Tournament Setup**\nSelect which category each group of channels should go in:",
+        view=view,
+        ephemeral=True,
+    )
 
 
 # ── Modal: /tournament-create ──────────────────────────────────────────────────
@@ -121,6 +222,8 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
         prize_parts = [p.strip().lstrip("$") for p in raw_prizes.split("/")]
         prize_display = " / ".join(f"${p}" for p in prize_parts)
 
+        t_cat, _ = get_categories(guild)
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(send_messages=False, view_channel=True),
             guild.me: discord.PermissionOverwrite(send_messages=True, manage_channels=True),
@@ -129,6 +232,7 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
             name="signups",
             overwrites=overwrites,
             topic=f"Tournament registration — ID: {tournament_id}",
+            category=t_cat,
         )
 
         embed = discord.Embed(
@@ -688,6 +792,7 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
     team_count = len(t["teams"])
     guild = interaction.guild
     staff_role = guild.get_role(STAFF_ROLE_ID)
+    t_cat, a_cat = get_categories(guild)
 
     read_only = {
         guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
@@ -704,9 +809,9 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
     if staff_role:
         admin_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only)
-    matches_channel = await guild.create_text_channel(name="tournament-matches", overwrites=matches_perms, slowmode_delay=600)
-    admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms)
+    updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only, category=t_cat)
+    matches_channel = await guild.create_text_channel(name="tournament-matches", overwrites=matches_perms, slowmode_delay=600, category=t_cat)
+    admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms, category=a_cat)
 
     t["updates_channel_id"] = updates_channel.id
     t["matches_channel_id"] = matches_channel.id
@@ -1073,19 +1178,18 @@ class MapActionButton(discord.ui.Button):
 
 
 class HostClientView(discord.ui.View):
-    def __init__(self, glorp_url: str, crankshaft_url: str, map_name: str):
+    def __init__(self, glorp_url: str, crankshaft_url: str):
         super().__init__(timeout=60)
-        self.glorp_url = glorp_url
-        self.crankshaft_url = crankshaft_url
-        self.map_name = map_name
-
-    @discord.ui.button(label="Open in Glorp", style=discord.ButtonStyle.primary)
-    async def open_glorp(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(self.glorp_url, ephemeral=True)
-
-    @discord.ui.button(label="Open in CrankShaft", style=discord.ButtonStyle.secondary)
-    async def open_crankshaft(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(self.crankshaft_url, ephemeral=True)
+        self.add_item(discord.ui.Button(
+            label="Open in Glorp",
+            style=discord.ButtonStyle.link,
+            url=glorp_url,
+        ))
+        self.add_item(discord.ui.Button(
+            label="Open in CrankShaft",
+            style=discord.ButtonStyle.link,
+            url=crankshaft_url,
+        ))
 
 
 class HostMapButton(discord.ui.Button):
@@ -1121,7 +1225,7 @@ class HostMapButton(discord.ui.Button):
         glorp_url = f"glorp://game?{query}"
         crankshaft_url = f"crankshaft://game?{query}"
 
-        view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url, map_name=self.map_name)
+        view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url)
         await interaction.response.send_message(
             f"**Host Map: {self.map_name}** — Choose your client:",
             view=view,
@@ -1184,6 +1288,7 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
 
     guild = interaction.guild
     staff_role = guild.get_role(STAFF_ROLE_ID)
+    t_cat, _ = get_categories(guild)
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -1207,6 +1312,7 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
     channel = await guild.create_text_channel(
         name=f"pb-{safe_t1}-vs-{safe_t2}",
         overwrites=overwrites,
+        category=t_cat,
     )
 
     match_id = str(uuid.uuid4())[:8]
