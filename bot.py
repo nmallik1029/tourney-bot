@@ -973,9 +973,36 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     return web.Response(status=200, text="ok")
 
 
+async def handle_launch(request: web.Request) -> web.Response:
+    client = request.query.get("client", "glorp")
+    params = {k: v for k, v in request.query.items() if k != "client"}
+    query = urllib.parse.urlencode(params)
+    if client == "crankshaft":
+        target_url = f"crankshaft://game?{query}"
+    else:
+        target_url = f"glorp://game?{query}"
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <title>Launching {client.title()}...</title>
+  <style>
+    body {{ font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #1e1f22; color: #fff; }}
+    p {{ font-size: 1.2rem; }}
+  </style>
+</head>
+<body>
+  <p>Launching {client.title()}... You can close this tab.</p>
+  <script>window.location = "{target_url}";</script>
+</body>
+</html>"""
+    return web.Response(content_type="text/html", text=html)
+
+
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/krunker", handle_krunker_webhook)
+    app.router.add_get("/launch", handle_launch)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
@@ -1177,6 +1204,9 @@ class MapActionButton(discord.ui.Button):
             await interaction.channel.send(embed=summary)
 
 
+RAILWAY_BASE = "https://tourney-bot-production.up.railway.app"
+
+
 class HostClientView(discord.ui.View):
     def __init__(self, glorp_url: str, crankshaft_url: str):
         super().__init__(timeout=60)
@@ -1220,10 +1250,11 @@ class HostMapButton(discord.ui.Button):
             "team1Name": team1,
             "team2Name": team2,
             "teamSize": team_size,
+            "webhook": WEBHOOK_URL,
         }
-        query = urllib.parse.urlencode(params) + f"&webhook={WEBHOOK_URL}"
-        glorp_url = f"glorp://game?{query}"
-        crankshaft_url = f"crankshaft://game?{query}"
+        query = urllib.parse.urlencode(params)
+        glorp_url = f"{RAILWAY_BASE}/launch?client=glorp&{query}"
+        crankshaft_url = f"{RAILWAY_BASE}/launch?client=crankshaft&{query}"
 
         view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url)
         await interaction.response.send_message(
