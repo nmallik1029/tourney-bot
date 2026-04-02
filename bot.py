@@ -4,6 +4,7 @@ from discord.ext import commands
 import uuid
 import json
 import re
+import os
 from pathlib import Path
 
 # ── Bot setup ──────────────────────────────────────────────────────────────────
