@@ -832,6 +832,46 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
     )
 
 
+# ── /test-scoreboard ──────────────────────────────────────────────────────────
+@bot.tree.command(name="test-scoreboard", description="Post a test scoreboard to see how it looks.", guild=discord.Object(id=SERVER_ID))
+async def test_scoreboard(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    fake_winner_players = [
+        {"name": "AraffyWappy",   "score": 6655, "kills": 45, "deaths": 30, "objective_score": 1340, "damage_done": 4183},
+        {"name": "LESHAWN",       "score": 6085, "kills": 37, "deaths": 39, "objective_score": 1340, "damage_done": 4582},
+        {"name": "TravisScottAl", "score": 5920, "kills": 40, "deaths": 41, "objective_score": 1070, "damage_done": 3781},
+        {"name": "rckyyyyyy",     "score": 5805, "kills": 37, "deaths": 30, "objective_score": 1540, "damage_done": 3659},
+    ]
+    fake_loser_players = [
+        {"name": "VollerPlays",   "score": 5950, "kills": 41, "deaths": 43, "objective_score": 1210, "damage_done": 4694},
+        {"name": "HypeZeus",      "score": 5870, "kills": 41, "deaths": 50, "objective_score": 880,  "damage_done": 4926},
+        {"name": "MemoMINI",      "score": 5745, "kills": 41, "deaths": 47, "objective_score": 910,  "damage_done": 4836},
+        {"name": "ECODOT",        "score": 4890, "kills": 36, "deaths": 53, "objective_score": 920,  "damage_done": 4257},
+    ]
+
+    try:
+        from scoreboard import draw_scoreboard, RED, WHITE
+        img_buf = draw_scoreboard(
+            tournament_name=interaction.guild.name,
+            map_name="Sandstorm",
+            team1_name="Team Alpha",
+            team1_score=2,
+            team1_players=fake_winner_players,
+            team1_color=RED,
+            team2_name="Team Bravo",
+            team2_score=1,
+            team2_players=fake_loser_players,
+            team2_color=WHITE,
+        )
+        await interaction.channel.send(file=discord.File(img_buf, filename="scoreboard.png"))
+        await interaction.followup.send("Test scoreboard posted.", ephemeral=True)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        await interaction.followup.send(f"Failed to generate scoreboard: {e}", ephemeral=True)
+
+
 # ── /tournament-create ─────────────────────────────────────────────────────────
 @bot.tree.command(name="tournament-create", description="Create a new tournament and open sign-ups.", guild=discord.Object(id=SERVER_ID))
 async def tournament_create(interaction: discord.Interaction):
