@@ -21,11 +21,11 @@ GRAY     = (160, 160, 175)
 GREEN    = (80, 220, 80)
 STAT_RED = (220, 60, 60)
 
-W         = 1200
-PADDING   = 36
-ROW_H     = 50
-HDR_H     = 36
-MAX_ROWS  = 10  # fixed canvas always fits 10 players
+W       = 1200
+PADDING = 36
+ROW_H   = 50
+HDR_H   = 36
+MAX_ROWS = 10
 
 C_NUM   = PADDING
 C_NAME  = PADDING + 55
@@ -37,11 +37,9 @@ C_DMG   = 1000
 
 BG_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "scoreboard_bg.png")
 
-# Fixed total height regardless of player count
-ROW1_H  = 70
-ROW2_H  = 38
-TOP_H   = 16 + ROW1_H + ROW2_H + 16 + PADDING * 2
-TOTAL_H = TOP_H + HDR_H + MAX_ROWS * ROW_H + PADDING
+ROW1_H = 70
+ROW2_H = 38
+TOP_H  = 16 + ROW1_H + ROW2_H + 16 + PADDING * 2
 
 
 def draw_scoreboard(
@@ -62,27 +60,21 @@ def draw_scoreboard(
         [(p, team2_color) for p in team2_players]
     )
     all_players.sort(key=lambda x: x[0].get("score", 0), reverse=True)
-
-    # Pad to MAX_ROWS with empty entries if fewer players
-    while len(all_players) < MAX_ROWS:
-        all_players.append(({"name": "", "score": 0, "kills": 0, "deaths": 0, "objective_score": 0, "damage_done": 0}, GRAY))
-
-    # Truncate if somehow over MAX_ROWS
     all_players = all_players[:MAX_ROWS]
 
-    # Only compute stat leaders from real players (non-empty)
-    real_players = [(p, c) for p, c in all_players if p.get("name")]
-    max_kills  = max((p.get("kills", 0)           for p, _ in real_players), default=0)
-    max_deaths = max((p.get("deaths", 0)          for p, _ in real_players), default=0)
-    max_obj    = max((p.get("objective_score", 0) for p, _ in real_players), default=0)
-    max_dmg    = max((p.get("damage_done", 0)     for p, _ in real_players), default=0)
+    total_h = TOP_H + HDR_H + len(all_players) * ROW_H + PADDING
 
-    img = Image.new("RGBA", (W, TOTAL_H), (0, 0, 0, 0))
+    max_kills  = max((p.get("kills", 0)           for p, _ in all_players), default=0)
+    max_deaths = max((p.get("deaths", 0)          for p, _ in all_players), default=0)
+    max_obj    = max((p.get("objective_score", 0) for p, _ in all_players), default=0)
+    max_dmg    = max((p.get("damage_done", 0)     for p, _ in all_players), default=0)
+
+    img = Image.new("RGBA", (W, total_h), (0, 0, 0, 0))
 
     if os.path.exists(BG_IMAGE_PATH):
         try:
-            bg = Image.open(BG_IMAGE_PATH).convert("RGBA").resize((W, TOTAL_H))
-            overlay = Image.new("RGBA", (W, TOTAL_H), (0, 0, 0, 120))
+            bg = Image.open(BG_IMAGE_PATH).convert("RGBA").resize((W, total_h))
+            overlay = Image.new("RGBA", (W, total_h), (0, 0, 0, 120))
             bg = Image.alpha_composite(bg, overlay)
             img = Image.alpha_composite(img, bg)
         except Exception:
@@ -101,11 +93,9 @@ def draw_scoreboard(
 
     y = PADDING
 
-    # Tournament name top-left
     draw.text((PADDING, y), tournament_name, font=f_tiny, fill=GRAY)
     y += 18
 
-    # Line 1: team1 (left, vertically centered) | map name (right, top-aligned)
     bbox_t1 = draw.textbbox((0, 0), f"{team1_name} ({team1_score})", font=f_teams)
     t1_y = y + (ROW1_H - (bbox_t1[3] - bbox_t1[1])) // 2
     draw.text((PADDING, t1_y), f"{team1_name} ({team1_score})", font=f_teams, fill=team1_color)
@@ -115,7 +105,6 @@ def draw_scoreboard(
     draw.text((W - PADDING - (bbox_map[2] - bbox_map[0]), y), map_text, font=f_map, fill=WHITE)
     y += ROW1_H
 
-    # Line 2: team2 (left) | winner line (right)
     draw.text((PADDING, y), f"{team2_name} ({team2_score})", font=f_teams, fill=team2_color)
 
     winner = team1_name if team1_score > team2_score else team2_name
@@ -130,7 +119,6 @@ def draw_scoreboard(
     draw.text((wx, y), after, font=f_winner, fill=WHITE)
     y += ROW2_H + 16
 
-    # Column headers
     headers = [
         (C_NUM,   "#"),
         (C_NAME,  "Name"),
@@ -145,7 +133,6 @@ def draw_scoreboard(
     draw.line([(PADDING, y + HDR_H - 1), (W - PADDING, y + HDR_H - 1)], fill=(120, 120, 150, 200), width=1)
     y += HDR_H
 
-    # Player rows
     for i, (p, color) in enumerate(all_players):
         text_y = y + (ROW_H - 22) // 2
         name   = p.get("name", "")
