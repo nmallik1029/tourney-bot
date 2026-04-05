@@ -4,6 +4,7 @@ from discord.ext import commands
 import uuid
 import json
 import re
+import random
 import asyncio
 import urllib.parse
 from pathlib import Path
@@ -743,6 +744,49 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
+    # ── Krunker link handling in pick/ban match channels ──
+    match_for_channel = next(
+        (m for m in active_matches.values() if m.get("channel_id") == message.channel.id),
+        None,
+    )
+    if match_for_channel and match_for_channel.get("host_captain_id"):
+        krunker_link = re.search(r"https?://krunker\.io/\?game=\S+", message.content)
+        if krunker_link:
+            host_id = match_for_channel["host_captain_id"]
+            if message.author.id != host_id:
+                await message.delete()
+                return
+
+            # Host captain posted a link — check it's NY region
+            link = krunker_link.group(0)
+            game_code = re.search(r"\?game=(\w+):", link)
+            if game_code and game_code.group(1) != "NY":
+                await message.delete()
+                await message.channel.send(
+                    f"<@{host_id}> Please host on **NY** servers, not {game_code.group(1)}.",
+                    delete_after=5,
+                )
+                return
+
+            # Valid NY link — ping all participants
+            team1 = match_for_channel["teams"][0]
+            team2 = match_for_channel["teams"][1]
+            all_pings = " ".join(
+                f"<@{pid}>" for pid in team1.get("player_ids", []) + team2.get("player_ids", [])
+            )
+            map_idx = match_for_channel.get("current_map_index", 0)
+            all_maps = match_for_channel.get("all_maps", [])
+            current_map = all_maps[map_idx] if map_idx < len(all_maps) else "Unknown"
+
+            await message.channel.send(
+                f"**{current_map}** is ready!\n"
+                f"{link}\n\n"
+                f"**{team1['name']}** (Team 1 / higher seed) join first.\n"
+                f"**{team2['name']}** (Team 2) join second.\n\n"
+                f"{all_pings}"
+            )
+            return
+
     t_id, t = find_tournament_by_matches_channel(message.channel.id)
     if t is None:
         return
@@ -1160,7 +1204,8 @@ def build_pickban_embed(match: dict) -> discord.Embed:
         )
     else:
         decider = remaining[0] if remaining else "Unknown"
-        embed.add_field(name="Decider Map", value=f"**{decider}**", inline=False)
+        label = "Map" if match["format"] == "bo1" else "Decider Map"
+        embed.add_field(name=label, value=f"**{decider}**", inline=False)
 
     return embed
 
@@ -1189,11 +1234,13 @@ class PickBanView(discord.ui.View):
             decider = match["remaining_maps"][0] if match["remaining_maps"] else None
             if decider:
                 total = len(match["picked_maps"])
+                is_bo1 = match["format"] == "bo1"
+                decider_label = f"Host Map: {decider}" if is_bo1 else f"Host Map {total+1}: {decider} (Decider)"
                 self.add_item(HostMapButton(
                     match_id=self.match_id,
                     map_index=total,
                     map_name=decider,
-                    label=f"Host Map {total+1}: {decider} (Decider)",
+                    label=decider_label,
                     disabled=total != match.get("current_map_index", 0),
                 ))
             return
@@ -1277,6 +1324,19 @@ class MapActionButton(discord.ui.Button):
             )
             await interaction.channel.send(embed=summary)
 
+            # Randomly assign a captain to host
+            host_team_idx = random.randint(0, 1)
+            host_captain_id = match["teams"][host_team_idx]["captain_id"]
+            match["host_captain_id"] = host_captain_id
+            match["current_map_index"] = 0
+            match["all_maps"] = all_maps
+
+            first_map = all_maps[0]
+            await interaction.channel.send(
+                f"<@{host_captain_id}> has been randomly selected to **host**.\n"
+                f"Please host **{first_map}** on **NY** servers and post the game link here."
+            )
+
 
 RAILWAY_BASE = "https://tourney-bot-production.up.railway.app"
 
@@ -1312,6 +1372,11 @@ class HostMapButton(discord.ui.Button):
         match = active_matches.get(self.match_id)
         if not match:
             await interaction.response.send_message("Match not found.", ephemeral=True)
+            return
+
+        host_id = match.get("host_captain_id")
+        if host_id and interaction.user.id != host_id:
+            await interaction.response.send_message("Only the assigned host can use this button.", ephemeral=True)
             return
 
         team1 = match["teams"][0]["name"]
@@ -1412,10 +1477,8 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
                 add_reactions=False,
             )
 
-    safe_t1 = re.sub(r"[^a-z0-9]", "", team1.lower())[:10]
-    safe_t2 = re.sub(r"[^a-z0-9]", "", team2.lower())[:10]
     channel = await guild.create_text_channel(
-        name=f"pb-{safe_t1}-vs-{safe_t2}",
+        name=f"{found_t1['team_name']} vs {found_t2['team_name']}",
         overwrites=overwrites,
         category=t_cat,
     )
@@ -1426,8 +1489,8 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
         "format": fmt,
         "team_size": team_size,
         "teams": [
-            {"name": found_t1["team_name"], "captain_id": t1_captain_id},
-            {"name": found_t2["team_name"], "captain_id": t2_captain_id},
+            {"name": found_t1["team_name"], "captain_id": t1_captain_id, "player_ids": t1_player_ids},
+            {"name": found_t2["team_name"], "captain_id": t2_captain_id, "player_ids": t2_player_ids},
         ],
         "remaining_maps": list(MAPS),
         "picked_maps": [],
@@ -1443,12 +1506,13 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
     view.rebuild()
     embed = build_pickban_embed(match)
 
-    await channel.send(
+    pb_msg = await channel.send(
         f"<@{t1_captain_id}> <@{t2_captain_id}> — Map selection has begun!\n"
         f"**{found_t1['team_name']}** (upper seed) bans first.",
         embed=embed,
         view=view,
     )
+    await pb_msg.pin()
 
     await interaction.response.send_message(
         f"Match created in {channel.mention}",
