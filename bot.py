@@ -46,11 +46,6 @@ tournaments: dict[str, dict] = load_tournaments()
 STAFF_ROLE_ID = 1489047073142739035
 SERVER_ID = 1489359260348579840
 
-SCORES = {
-    "bo1": ["1-0"],
-    "bo3": ["2-0", "2-1"],
-    "bo5": ["3-0", "3-1", "3-2"],
-}
 
 pending_registrations: dict[int, dict] = {}
 
@@ -89,17 +84,6 @@ def build_team_embed(team: dict, tournament_id: str, submitter_name: str) -> dis
     embed.set_footer(text=f"Tournament ID: {tournament_id}")
     return embed
 
-
-def find_tournament_by_matches_channel(channel_id: int):
-    for t_id, t in tournaments.items():
-        if t.get("matches_channel_id") == channel_id:
-            return t_id, t
-    return None, None
-
-
-def team_label(team: dict) -> str:
-    captain = team["players"][0]
-    return f"{team['team_name']} (cap: {captain['ign']})"
 
 
 # ── /tournament-setup ──────────────────────────────────────────────────────────
@@ -572,171 +556,7 @@ class EditIGNModal(discord.ui.Modal, title="Update Team Name & IGNs"):
         )
 
 
-# ── Match result: Step 1 — BO select ──────────────────────────────────────────
-class BoSelectView(discord.ui.View):
-    def __init__(self, tournament_id: str, original_message_id: int, matches_channel_id: int, image_url: str, submitter_name: str):
-        super().__init__(timeout=None)
-        self.tournament_id = tournament_id
-        self.original_message_id = original_message_id
-        self.matches_channel_id = matches_channel_id
-        self.image_url = image_url
-        self.submitter_name = submitter_name
-
-    @discord.ui.select(
-        placeholder="Select Best of...",
-        custom_id="bo_select",
-        options=[
-            discord.SelectOption(label="BO1 — Best of 1", value="bo1"),
-            discord.SelectOption(label="BO3 — Best of 3", value="bo3"),
-            discord.SelectOption(label="BO5 — Best of 5", value="bo5"),
-        ],
-    )
-    async def bo_selected(self, interaction: discord.Interaction, select: discord.ui.Select):
-        bo = select.values[0]
-        t = tournaments.get(self.tournament_id)
-        if not t:
-            await interaction.response.send_message("Tournament not found.", ephemeral=True)
-            return
-
-        teams = t.get("teams", [])
-        if len(teams) < 2:
-            await interaction.response.send_message("Not enough teams registered.", ephemeral=True)
-            return
-
-        team_options = [
-            discord.SelectOption(label=team_label(tm)[:100], value=tm["team_id"])
-            for tm in teams[:25]
-        ]
-        score_options = [
-            discord.SelectOption(label=score, value=score)
-            for score in SCORES[bo]
-        ]
-
-        new_view = ResultDetailsView(
-            tournament_id=self.tournament_id,
-            original_message_id=self.original_message_id,
-            matches_channel_id=self.matches_channel_id,
-            image_url=self.image_url,
-            submitter_name=self.submitter_name,
-            bo=bo,
-            team_options=team_options,
-            score_options=score_options,
-        )
-
-        await interaction.response.edit_message(
-            content=f"**BO selected: {bo.upper()}**\nNow select the winner, loser, and score.",
-            view=new_view,
-        )
-
-
-# ── Match result: Step 2 — Winner / Loser / Score ─────────────────────────────
-class ResultDetailsView(discord.ui.View):
-    def __init__(self, tournament_id, original_message_id, matches_channel_id, image_url, submitter_name, bo, team_options, score_options):
-        super().__init__(timeout=None)
-        self.tournament_id = tournament_id
-        self.original_message_id = original_message_id
-        self.matches_channel_id = matches_channel_id
-        self.image_url = image_url
-        self.submitter_name = submitter_name
-        self.bo = bo
-        self.selected_winner = None
-        self.selected_loser = None
-        self.selected_score = None
-
-        self.add_item(WinnerSelect(team_options))
-        self.add_item(LoserSelect(team_options))
-        self.add_item(ScoreSelect(score_options))
-
-    @discord.ui.button(label="Submit Result", style=discord.ButtonStyle.success, custom_id="submit_result_btn", row=4)
-    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_winner or not self.selected_loser or not self.selected_score:
-            await interaction.response.send_message("Please select winner, loser, and score before submitting.", ephemeral=True)
-            return
-
-        if self.selected_winner == self.selected_loser:
-            await interaction.response.send_message("Winner and loser cannot be the same team.", ephemeral=True)
-            return
-
-        t = tournaments.get(self.tournament_id)
-        if not t:
-            await interaction.response.send_message("Tournament not found.", ephemeral=True)
-            return
-
-        winner_team = next((tm for tm in t["teams"] if tm["team_id"] == self.selected_winner), None)
-        loser_team = next((tm for tm in t["teams"] if tm["team_id"] == self.selected_loser), None)
-
-        if not winner_team or not loser_team:
-            await interaction.response.send_message("Could not find selected teams.", ephemeral=True)
-            return
-
-        updates_channel = interaction.guild.get_channel(t["updates_channel_id"])
-        matches_channel = interaction.guild.get_channel(self.matches_channel_id)
-
-        if updates_channel:
-            embed = discord.Embed(
-                description=f"## **{winner_team['team_name']}** won {self.selected_score} against **{loser_team['team_name']}**",
-                color=0x2B2D31,
-            )
-            embed.set_image(url=self.image_url)
-            await updates_channel.send(embed=embed)
-
-        if matches_channel:
-            try:
-                original = await matches_channel.fetch_message(self.original_message_id)
-                await original.add_reaction("✅")
-            except discord.NotFound:
-                pass
-
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(
-            content=f"Result approved: **{winner_team['team_name']}** won {self.selected_score} against **{loser_team['team_name']}**",
-            view=self,
-        )
-
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="deny_result_btn", row=4)
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        matches_channel = interaction.guild.get_channel(self.matches_channel_id)
-        if matches_channel:
-            try:
-                original = await matches_channel.fetch_message(self.original_message_id)
-                await original.add_reaction("❌")
-            except discord.NotFound:
-                pass
-
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content="Result denied.", view=self)
-
-
-class WinnerSelect(discord.ui.Select):
-    def __init__(self, team_options):
-        super().__init__(placeholder="Select winner...", custom_id="winner_select", options=team_options, row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_winner = self.values[0]
-        await interaction.response.defer()
-
-
-class LoserSelect(discord.ui.Select):
-    def __init__(self, team_options):
-        super().__init__(placeholder="Select loser...", custom_id="loser_select", options=team_options, row=2)
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_loser = self.values[0]
-        await interaction.response.defer()
-
-
-class ScoreSelect(discord.ui.Select):
-    def __init__(self, score_options):
-        super().__init__(placeholder="Select score...", custom_id="score_select", options=score_options, row=3)
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_score = self.values[0]
-        await interaction.response.defer()
-
-
-# ── on_message: forward image to admin ────────────────────────────────────────
+# ── on_message ────────────────────────────────────────────────────────────────
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -786,32 +606,6 @@ async def on_message(message: discord.Message):
                 f"{all_pings}"
             )
             return
-
-    t_id, t = find_tournament_by_matches_channel(message.channel.id)
-    if t is None:
-        return
-
-    if not message.attachments:
-        return
-
-    admin_channel = message.guild.get_channel(t["admin_channel_id"])
-    if not admin_channel:
-        return
-
-    attachment = message.attachments[0]
-    embed = discord.Embed(title="Match Result Submission", color=0x2B2D31)
-    embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
-    embed.set_image(url=attachment.url)
-    embed.set_footer(text=f"Tournament: {t['name']}  |  Message ID: {message.id}")
-
-    view = BoSelectView(
-        tournament_id=t_id,
-        original_message_id=message.id,
-        matches_channel_id=message.channel.id,
-        image_url=attachment.url,
-        submitter_name=message.author.display_name,
-    )
-    await admin_channel.send(content="Select the Best of format to continue:", embed=embed, view=view)
 
 
 # ── /tournament-start ──────────────────────────────────────────────────────────
@@ -993,7 +787,13 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         return web.Response(status=400, text="Invalid JSON")
 
     import json as _json
-    print(f"[Webhook] Full payload:\n{_json.dumps(payload, indent=2)}")
+    raw_json = _json.dumps(payload, indent=2)
+    for guild in bot.guilds:
+        ch = discord.utils.get(guild.text_channels, name="test-raw-data")
+        if ch:
+            # Discord message limit is 2000 chars, split if needed
+            for i in range(0, len(raw_json), 1990):
+                await ch.send(f"```json\n{raw_json[i:i+1990]}\n```")
 
     event_type = payload.get("type")
     if event_type != "match_end":
@@ -1408,46 +1208,9 @@ class HostMapButton(discord.ui.Button):
         await interaction.message.edit(view=view2)
 
 
-# ── /match-create command ──────────────────────────────────────────────────────
-@bot.tree.command(
-    name="match-create",
-    description="Start a pick/ban for a match between two teams.",
-    guild=discord.Object(id=SERVER_ID),
-)
-@app_commands.describe(
-    team1="Name of the higher seed team (bans first)",
-    team2="Name of the lower seed team",
-    format="Match format: bo1, bo3, or bo5",
-)
-async def match_create(interaction: discord.Interaction, team1: str, team2: str, format: str):
-    fmt = format.lower()
-    if fmt not in PB_SEQUENCES:
-        await interaction.response.send_message("Format must be bo1, bo3, or bo5.", ephemeral=True)
-        return
-
-    found_t1 = None
-    found_t2 = None
-    found_tournament = None
-
-    for t_id, t in tournaments.items():
-        if t.get("open"):
-            continue
-        teams = t.get("teams", [])
-        t1 = next((tm for tm in teams if tm["team_name"].strip().lower() == team1.strip().lower()), None)
-        t2 = next((tm for tm in teams if tm["team_name"].strip().lower() == team2.strip().lower()), None)
-        if t1 and t2:
-            found_t1 = t1
-            found_t2 = t2
-            found_tournament = t
-            break
-
-    if not found_t1 or not found_t2:
-        await interaction.response.send_message(
-            "Could not find both teams. Make sure team names exactly match registration.",
-            ephemeral=True,
-        )
-        return
-
+# ── Match creation helper ─────────────────────────────────────────────────────
+async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, found_tournament: dict, fmt: str) -> discord.TextChannel:
+    """Create a match channel and start pick/ban. Returns the created channel."""
     t1_captain_id = found_t1["players"][0]["discord_id"]
     t2_captain_id = found_t2["players"][0]["discord_id"]
     team_size = f"{found_tournament['team_size']}v{found_tournament['team_size']}"
@@ -1456,7 +1219,6 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
     t2_player_ids = [p["discord_id"] for p in found_t2["players"]]
     all_player_ids = t1_player_ids + t2_player_ids
 
-    guild = interaction.guild
     staff_role = guild.get_role(STAFF_ROLE_ID)
     t_cat, _ = get_categories(guild)
 
@@ -1513,11 +1275,151 @@ async def match_create(interaction: discord.Interaction, team1: str, team2: str,
         view=view,
     )
     await pb_msg.pin()
+    return channel
 
-    await interaction.response.send_message(
-        f"Match created in {channel.mention}",
-        ephemeral=True,
-    )
+
+# ── /round-setup command ──────────────────────────────────────────────────────
+class RoundSetupView(discord.ui.View):
+    def __init__(self, tournament: dict, tournament_id: str):
+        super().__init__(timeout=300)
+        self.tournament = tournament
+        self.tournament_id = tournament_id
+        self.matchups = []  # list of (team1_dict, team2_dict, format_str)
+        self.selected_team1 = None
+        self.selected_team2 = None
+        self.selected_format = None
+
+        teams = tournament.get("teams", [])
+        team_options = [
+            discord.SelectOption(label=tm["team_name"][:100], value=tm["team_id"])
+            for tm in teams[:25]
+        ]
+
+        self.team1_select = RoundTeamSelect(
+            team_options, placeholder="Higher seed (bans first)...", custom_id="round_team1", row=0,
+        )
+        self.team2_select = RoundTeamSelect(
+            team_options, placeholder="Lower seed...", custom_id="round_team2", row=1,
+        )
+        self.format_select = RoundFormatSelect(row=2)
+        self.add_item(self.team1_select)
+        self.add_item(self.team2_select)
+        self.add_item(self.format_select)
+
+    def build_embed(self):
+        desc = ""
+        if self.matchups:
+            for i, (t1, t2, fmt) in enumerate(self.matchups):
+                desc += f"`{i+1}.` **{t1['team_name']}** vs **{t2['team_name']}** — {fmt.upper()}\n"
+        else:
+            desc = "*No matches added yet.*"
+        embed = discord.Embed(
+            title="Round Setup",
+            description=desc,
+            color=0x2B2D31,
+        )
+        embed.set_footer(text="Select two teams and a format, then click Add Match. Click Start Round when ready.")
+        return embed
+
+    @discord.ui.button(label="Add Match", style=discord.ButtonStyle.success, row=3)
+    async def add_match(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_team1 or not self.selected_team2 or not self.selected_format:
+            await interaction.response.send_message("Select both teams and a format first.", ephemeral=True)
+            return
+        if self.selected_team1 == self.selected_team2:
+            await interaction.response.send_message("Can't match a team against itself.", ephemeral=True)
+            return
+
+        teams = self.tournament.get("teams", [])
+        t1 = next((tm for tm in teams if tm["team_id"] == self.selected_team1), None)
+        t2 = next((tm for tm in teams if tm["team_id"] == self.selected_team2), None)
+        if not t1 or not t2:
+            await interaction.response.send_message("Could not find selected teams.", ephemeral=True)
+            return
+
+        self.matchups.append((t1, t2, self.selected_format))
+        self.selected_team1 = None
+        self.selected_team2 = None
+        self.selected_format = None
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Start Round", style=discord.ButtonStyle.primary, row=3)
+    async def start_round(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.matchups:
+            await interaction.response.send_message("Add at least one match first.", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            embed=self.build_embed(),
+            view=self,
+        )
+
+        guild = interaction.guild
+        channels = []
+        for t1, t2, fmt in self.matchups:
+            ch = await create_match(guild, t1, t2, self.tournament, fmt)
+            channels.append(ch)
+
+        mentions = " ".join(ch.mention for ch in channels)
+        await interaction.followup.send(f"**Round started!** {len(channels)} match(es) created:\n{mentions}")
+        self.stop()
+
+
+class RoundTeamSelect(discord.ui.Select):
+    def __init__(self, options, placeholder, custom_id, row):
+        super().__init__(placeholder=placeholder, custom_id=custom_id, options=options, row=row)
+
+    async def callback(self, interaction: discord.Interaction):
+        if "team1" in self.custom_id:
+            self.view.selected_team1 = self.values[0]
+        else:
+            self.view.selected_team2 = self.values[0]
+        await interaction.response.defer()
+
+
+class RoundFormatSelect(discord.ui.Select):
+    def __init__(self, row):
+        super().__init__(
+            placeholder="Format...",
+            custom_id="round_format",
+            options=[
+                discord.SelectOption(label="BO1", value="bo1"),
+                discord.SelectOption(label="BO3", value="bo3"),
+                discord.SelectOption(label="BO5", value="bo5"),
+            ],
+            row=row,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_format = self.values[0]
+        await interaction.response.defer()
+
+
+@bot.tree.command(
+    name="round-setup",
+    description="Set up a round of matches with an interactive panel.",
+    guild=discord.Object(id=SERVER_ID),
+)
+@app_commands.describe(tournament_id="The tournament ID")
+async def round_setup(interaction: discord.Interaction, tournament_id: str):
+    t_id = tournament_id.upper()
+    if t_id not in tournaments:
+        await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
+        return
+
+    t = tournaments[t_id]
+    if t.get("open"):
+        await interaction.response.send_message("Tournament signups are still open. Start it first.", ephemeral=True)
+        return
+
+    if len(t.get("teams", [])) < 2:
+        await interaction.response.send_message("Not enough teams registered.", ephemeral=True)
+        return
+
+    view = RoundSetupView(tournament=t, tournament_id=t_id)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
 
 
 # ── Run ────────────────────────────────────────────────────────────────────────
