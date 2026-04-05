@@ -948,6 +948,9 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     except Exception:
         return web.Response(status=400, text="Invalid JSON")
 
+    import json as _json
+    print(f"[Webhook] Full payload:\n{_json.dumps(payload, indent=2)}")
+
     event_type = payload.get("type")
     if event_type != "match_end":
         return web.Response(status=200, text="ok")
