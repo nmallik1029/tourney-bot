@@ -659,8 +659,11 @@ async def on_message(message: discord.Message):
             if game_code and game_code.group(1) != "NY":
                 await message.delete()
                 await message.channel.send(
-                    f"<@{host_id}> Please host on **NY** servers, not {game_code.group(1)}.",
-                    delete_after=5,
+                    f"**Wrong host region! Host NY!**\n\n"
+                    f"It's possible that your default region is set to Dallas or FRA. "
+                    f"Switch your default region to New York, join any New York game server, "
+                    f"and reclick the host button above. Contact <@723538323636748359> if you have any questions.",
+                    allowed_mentions=discord.AllowedMentions(users=True),
                 )
                 return
 
