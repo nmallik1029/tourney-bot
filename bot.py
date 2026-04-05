@@ -832,6 +832,8 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
     )
 
 
+MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
+
 # ── /test-scoreboard ──────────────────────────────────────────────────────────
 FAKE_PLAYERS = [
     {"name": "AraffyWappy",   "score": 6655, "kills": 45, "deaths": 30, "objective_score": 1340, "damage_done": 4183},
@@ -1081,7 +1083,6 @@ async def start_webhook_server():
 
 
 # ── Pick/Ban system ────────────────────────────────────────────────────────────
-MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
 
 MAP_IDS = {
     "Bureau": "Bureau",
