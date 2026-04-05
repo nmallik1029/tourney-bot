@@ -76,20 +76,24 @@ async def challonge_create_tournament(name: str, url_slug: str) -> dict:
         "tournament[tournament_type]": "double elimination",
         "tournament[private]": "false",
         "tournament[game_name]": "Krunker",
+        "tournament[subdomain]": "krunker-biweeklies",
     })
     return data.get("tournament", data)
 
 
 async def challonge_add_participants(challonge_id, teams_with_seeds: list[dict]) -> list:
     """teams_with_seeds: [{"name": "...", "seed": 1, "misc": "team_id"}, ...]"""
-    form = {}
-    for i, t in enumerate(teams_with_seeds):
-        form[f"participants[{i}][name]"] = t["name"]
-        form[f"participants[{i}][seed]"] = str(t["seed"])
+    added = []
+    for t in teams_with_seeds:
+        form = {
+            "participant[name]": t["name"],
+            "participant[seed]": str(t["seed"]),
+        }
         if t.get("misc"):
-            form[f"participants[{i}][misc]"] = t["misc"]
-    data = await challonge_request("POST", f"/tournaments/{challonge_id}/participants/bulk_add.json", data=form)
-    return data
+            form["participant[misc]"] = t["misc"]
+        data = await challonge_request("POST", f"/tournaments/{challonge_id}/participants.json", data=form)
+        added.append(data)
+    return added
 
 
 async def challonge_start(challonge_id) -> dict:
@@ -797,16 +801,20 @@ class SeedConfirmButton(discord.ui.Button):
         # Create Challonge bracket
         slug = re.sub(r"[^a-z0-9]", "_", t["name"].lower())[:50] + f"_{t_id.lower()}"
         try:
+            print(f"[Challonge] Creating tournament: {t['name']} ({slug})")
             ch_tourney = await challonge_create_tournament(t["name"], slug)
             challonge_id = ch_tourney["id"]
             t["challonge_id"] = challonge_id
-            t["challonge_url"] = ch_tourney.get("full_challonge_url", f"https://challonge.com/{slug}")
+            t["challonge_url"] = ch_tourney.get("full_challonge_url", f"https://krunker-biweeklies.challonge.com/{slug}")
+            print(f"[Challonge] Tournament created: {challonge_id}")
 
             participants = [
                 {"name": tm["team_name"], "seed": i + 1, "misc": tm["team_id"]}
                 for i, tm in enumerate(view.seeded_teams)
             ]
+            print(f"[Challonge] Adding {len(participants)} participants...")
             added = await challonge_add_participants(challonge_id, participants)
+            print(f"[Challonge] Participants added: {len(added)}")
 
             # Build mapping: team_id -> challonge participant_id
             participant_map = {}
@@ -816,13 +824,16 @@ class SeedConfirmButton(discord.ui.Button):
                     if p.get("misc"):
                         participant_map[p["misc"]] = p["id"]
             t["challonge_participant_map"] = participant_map
+            print(f"[Challonge] Participant map: {participant_map}")
 
+            print(f"[Challonge] Starting tournament...")
             await challonge_start(challonge_id)
             save_tournaments()
+            print(f"[Challonge] Tournament started successfully")
 
             bracket_msg = f"**{t['name']}** has started with {team_count} teams!\n**Bracket:** {t['challonge_url']}"
         except Exception as e:
-            print(f"[Challonge] Error creating bracket: {e}")
+            print(f"[Challonge] Error: {e}")
             import traceback
             traceback.print_exc()
             bracket_msg = f"**{t['name']}** has started with {team_count} teams.\n⚠️ Challonge bracket creation failed: {e}"
