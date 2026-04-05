@@ -1303,9 +1303,9 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
     if not t1_dict or not t2_dict:
         return web.json_response({"error": "could not resolve teams"}, status=404)
 
-    guild = bot.guilds[0] if bot.guilds else None
+    guild = bot.get_guild(SERVER_ID)
     if not guild:
-        return web.json_response({"error": "bot not in any guild"}, status=500)
+        return web.json_response({"error": "bot not in target guild"}, status=500)
 
     try:
         ch = await create_match(guild, t1_dict, t2_dict, t, fmt, challonge_match_id=ch_match_id)
@@ -1322,49 +1322,84 @@ BRACKET_HTML = """<!DOCTYPE html>
 <title>Tournament Admin</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; }
+  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; min-height: 100vh; }
   h1 { font-size: 1.5rem; margin-bottom: 4px; }
-  .subtitle { color: #888; margin-bottom: 20px; font-size: 0.9rem; }
-  .subtitle a { color: #f09030; }
-  .bracket-container { display: flex; gap: 0; overflow-x: auto; padding: 20px 0; }
-  .round-column { display: flex; flex-direction: column; justify-content: center; min-width: 240px; gap: 8px; position: relative; }
-  .round-header { text-align: center; font-size: 0.75rem; color: #f09030; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px; }
+  .subtitle { color: #888; margin-bottom: 12px; font-size: 0.9rem; }
+  .subtitle a { color: #f09030; text-decoration: none; }
+  .subtitle a:hover { text-decoration: underline; }
+
+  .section-label {
+    font-size: 1rem; font-weight: 700; color: #f09030; text-transform: uppercase;
+    letter-spacing: 1.5px; margin: 28px 0 4px; padding: 6px 12px;
+    border-left: 3px solid #f09030;
+  }
+
+  /* ── Bracket layout ─────────────────────────────────────── */
+  .bracket-wrapper { overflow-x: auto; padding: 8px 0 16px; }
+  .bracket {
+    display: flex; align-items: stretch; position: relative;
+    width: max-content;
+  }
+  .round {
+    display: flex; flex-direction: column; justify-content: center;
+    min-width: 220px; position: relative; z-index: 1;
+  }
+  .round-hdr {
+    text-align: center; font-size: 0.7rem; color: #f09030; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px; padding-bottom: 8px;
+  }
+  .round-matches { display: flex; flex-direction: column; justify-content: space-around; flex: 1; }
+
+  /* Connector column between rounds */
+  .connector-col { width: 32px; position: relative; flex-shrink: 0; }
+  .connector-col svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  .connector-col svg line { stroke: #3a3a5a; stroke-width: 1.5; }
+
+  /* ── Match card ─────────────────────────────────────────── */
   .match-card {
-    background: #16213e; border: 1px solid #2a2a4a; border-radius: 6px;
-    padding: 0; cursor: default; transition: all 0.15s; position: relative;
-    overflow: hidden;
+    background: #0f1a30; border: 1px solid #2a2a4a; border-radius: 4px;
+    width: 200px; margin: 4px auto; cursor: default; transition: all 0.15s;
+    position: relative; overflow: hidden;
   }
   .match-card.open { border-color: #f09030; cursor: pointer; }
-  .match-card.open:hover { background: #1a2a50; box-shadow: 0 0 12px rgba(240,144,48,0.3); }
+  .match-card.open:hover { background: #162040; box-shadow: 0 0 10px rgba(240,144,48,0.25); transform: scale(1.02); }
   .match-card.started { border-color: #4CAF50; }
-  .match-card.complete { opacity: 0.6; }
-  .match-id { position: absolute; top: 4px; right: 6px; font-size: 0.65rem; color: #555; }
-  .team-row {
-    display: flex; align-items: center; padding: 6px 10px;
-    border-bottom: 1px solid #2a2a4a; font-size: 0.85rem;
+  .match-card.complete { opacity: 0.55; }
+  .match-id {
+    position: absolute; top: 2px; right: 5px; font-size: 0.6rem; color: #444;
+    font-weight: 600;
   }
-  .team-row:last-child { border-bottom: none; }
-  .team-seed { color: #666; font-size: 0.7rem; width: 22px; text-align: right; margin-right: 8px; }
-  .team-name { flex: 1; }
+  .team-row {
+    display: flex; align-items: center; padding: 5px 8px; font-size: 0.8rem;
+    border-bottom: 1px solid #1a2040;
+  }
+  .team-row:last-of-type { border-bottom: none; }
+  .team-row.top { border-bottom: 1px solid #2a2a4a; }
+  .team-seed { color: #555; font-size: 0.65rem; width: 18px; text-align: right; margin-right: 6px; flex-shrink: 0; }
+  .team-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .team-name.winner { color: #f09030; font-weight: 700; }
-  .team-name.tbd { color: #555; font-style: italic; }
-  .team-score { font-weight: 700; min-width: 20px; text-align: center; padding: 2px 6px; border-radius: 3px; font-size: 0.8rem; }
+  .team-name.loser { color: #555; }
+  .team-name.tbd { color: #444; font-style: italic; }
+  .team-score {
+    font-weight: 700; min-width: 24px; text-align: center; padding: 1px 5px;
+    border-radius: 2px; font-size: 0.75rem; margin-left: 4px;
+  }
   .team-score.win { background: #f09030; color: #000; }
   .match-status {
-    font-size: 0.65rem; text-align: center; padding: 2px; text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-size: 0.6rem; text-align: center; padding: 2px; text-transform: uppercase;
+    letter-spacing: 0.5px; font-weight: 600;
   }
   .match-status.live { background: #4CAF50; color: #fff; }
-  .match-status.open-status { background: #f09030; color: #000; }
-  .section-label { font-size: 1.1rem; font-weight: 700; margin: 24px 0 8px; color: #f09030; }
-  /* Format picker modal */
+  .match-status.open-status { background: rgba(240,144,48,0.15); color: #f09030; }
+
+  /* ── Format picker modal ────────────────────────────────── */
   .modal-overlay {
     display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.75); z-index: 100; align-items: center; justify-content: center;
   }
   .modal-overlay.active { display: flex; }
   .modal {
-    background: #16213e; border: 1px solid #f09030; border-radius: 10px;
+    background: #0f1a30; border: 1px solid #f09030; border-radius: 10px;
     padding: 24px; min-width: 320px; text-align: center;
   }
   .modal h2 { font-size: 1.1rem; margin-bottom: 4px; }
@@ -1388,8 +1423,6 @@ BRACKET_HTML = """<!DOCTYPE html>
     background: transparent; color: #888; font-size: 0.85rem;
     cursor: pointer; margin-top: 10px;
   }
-  .loading { color: #f09030; text-align: center; padding: 40px; }
-  .connector { position: absolute; right: -16px; width: 16px; border: 1px solid #2a2a4a; border-left: none; }
 </style>
 </head>
 <body>
@@ -1397,13 +1430,13 @@ BRACKET_HTML = """<!DOCTYPE html>
 <p class="subtitle" id="subtitle"></p>
 
 <div class="section-label">Winners Bracket</div>
-<div class="bracket-container" id="winners-bracket"></div>
+<div class="bracket-wrapper"><div class="bracket" id="winners-bracket"></div></div>
 
 <div class="section-label">Losers Bracket</div>
-<div class="bracket-container" id="losers-bracket"></div>
+<div class="bracket-wrapper"><div class="bracket" id="losers-bracket"></div></div>
 
-<div class="section-label">Grand Finals</div>
-<div class="bracket-container" id="grand-finals"></div>
+<div class="section-label" id="gf-label">Grand Finals</div>
+<div class="bracket-wrapper"><div class="bracket" id="grand-finals"></div></div>
 
 <div class="modal-overlay" id="modal">
   <div class="modal">
@@ -1424,6 +1457,8 @@ const T_ID = "{{TOURNAMENT_ID}}";
 const TOKEN = "{{TOKEN}}";
 let selectedFmt = null;
 let selectedMatchId = null;
+const MATCH_CARD_H = 58;  // approx height of a match card + margin
+const CONNECTOR_W = 32;
 
 async function loadBracket() {
   const resp = await fetch(`/api/tournament/${T_ID}?token=${TOKEN}`);
@@ -1431,9 +1466,8 @@ async function loadBracket() {
   const data = await resp.json();
 
   document.getElementById("title").textContent = data.name;
-  document.getElementById("subtitle").innerHTML = `<a href="${data.challonge_url}" target="_blank">View on Challonge ↗</a>`;
+  document.getElementById("subtitle").innerHTML = `<a href="${data.challonge_url}" target="_blank">View on Challonge &#8599;</a> &nbsp;|&nbsp; Auto-refreshes every 30s`;
 
-  // Group matches by round
   const winners = {}, losers = {}, gf = [];
   for (const m of data.matches) {
     if (m.round > 0) {
@@ -1447,47 +1481,22 @@ async function loadBracket() {
     }
   }
 
-  // Detect grand finals (highest positive round with only 1-2 matches)
+  // Detect grand finals: highest positive round with <=2 matches
   const wRounds = Object.keys(winners).map(Number).sort((a,b) => a-b);
-  const maxWRound = wRounds[wRounds.length - 1];
-  if (winners[maxWRound] && winners[maxWRound].length <= 2) {
-    gf.push(...winners[maxWRound]);
-    delete winners[maxWRound];
-  }
-
-  renderBracket(document.getElementById("winners-bracket"), winners, false);
-  renderBracket(document.getElementById("losers-bracket"), losers, true);
-  renderRound(document.getElementById("grand-finals"), gf, "Grand Finals");
-}
-
-function renderBracket(container, roundsObj, isLosers) {
-  container.innerHTML = "";
-  const rounds = Object.keys(roundsObj).map(Number).sort((a,b) => isLosers ? b-a : a-b);
-  for (const r of rounds) {
-    const col = document.createElement("div");
-    col.className = "round-column";
-    const hdr = document.createElement("div");
-    hdr.className = "round-header";
-    hdr.textContent = isLosers ? `Losers R${Math.abs(r)}` : `Winners R${r}`;
-    col.appendChild(hdr);
-    for (const m of roundsObj[r]) {
-      col.appendChild(makeMatchCard(m));
+  if (wRounds.length) {
+    const maxW = wRounds[wRounds.length - 1];
+    if (winners[maxW] && winners[maxW].length <= 2) {
+      gf.push(...winners[maxW]);
+      delete winners[maxW];
     }
-    container.appendChild(col);
   }
-}
 
-function renderRound(container, matches, label) {
-  container.innerHTML = "";
-  if (!matches.length) { container.style.display = "none"; return; }
-  const col = document.createElement("div");
-  col.className = "round-column";
-  const hdr = document.createElement("div");
-  hdr.className = "round-header";
-  hdr.textContent = label;
-  col.appendChild(hdr);
-  for (const m of matches) col.appendChild(makeMatchCard(m));
-  container.appendChild(col);
+  renderBracketWithLines(document.getElementById("winners-bracket"), winners, false);
+  renderBracketWithLines(document.getElementById("losers-bracket"), losers, true);
+  renderGrandFinals(document.getElementById("grand-finals"), gf);
+
+  const gfLabel = document.getElementById("gf-label");
+  gfLabel.style.display = gf.length ? "" : "none";
 }
 
 function makeMatchCard(m) {
@@ -1497,27 +1506,25 @@ function makeMatchCard(m) {
   else if (m.started_in_discord) card.className += " started";
   else if (m.state === "complete") card.className += " complete";
 
-  const idSpan = `<span class="match-id">${m.identifier}</span>`;
   const scores = m.scores_csv ? m.scores_csv.split("-") : ["", ""];
   const p1Won = m.winner_id && m.winner_id === m.player1_id;
   const p2Won = m.winner_id && m.winner_id === m.player2_id;
 
   let statusHtml = "";
-  if (m.started_in_discord) statusHtml = `<div class="match-status live">LIVE</div>`;
-  else if (m.state === "open") statusHtml = `<div class="match-status open-status">READY</div>`;
+  if (m.started_in_discord) statusHtml = '<div class="match-status live">LIVE</div>';
+  else if (m.state === "open") statusHtml = '<div class="match-status open-status">READY</div>';
 
-  card.innerHTML = `
-    ${idSpan}
-    <div class="team-row">
-      <span class="team-name ${m.player1 ? (p1Won ? 'winner' : '') : 'tbd'}">${m.player1 || 'TBD'}</span>
-      <span class="team-score ${p1Won ? 'win' : ''}">${scores[0] || ''}</span>
-    </div>
-    <div class="team-row">
-      <span class="team-name ${m.player2 ? (p2Won ? 'winner' : '') : 'tbd'}">${m.player2 || 'TBD'}</span>
-      <span class="team-score ${p2Won ? 'win' : ''}">${scores[1] || ''}</span>
-    </div>
-    ${statusHtml}
-  `;
+  card.innerHTML =
+    '<span class="match-id">' + m.identifier + '</span>' +
+    '<div class="team-row top">' +
+      '<span class="team-name ' + (m.player1 ? (p1Won ? 'winner' : (p2Won ? 'loser' : '')) : 'tbd') + '">' + (m.player1 || 'TBD') + '</span>' +
+      '<span class="team-score ' + (p1Won ? 'win' : '') + '">' + (scores[0] || '') + '</span>' +
+    '</div>' +
+    '<div class="team-row">' +
+      '<span class="team-name ' + (m.player2 ? (p2Won ? 'winner' : (p1Won ? 'loser' : '')) : 'tbd') + '">' + (m.player2 || 'TBD') + '</span>' +
+      '<span class="team-score ' + (p2Won ? 'win' : '') + '">' + (scores[1] || '') + '</span>' +
+    '</div>' +
+    statusHtml;
 
   if (m.state === "open" && !m.started_in_discord) {
     card.addEventListener("click", () => openModal(m));
@@ -1525,10 +1532,142 @@ function makeMatchCard(m) {
   return card;
 }
 
+function renderBracketWithLines(container, roundsObj, isLosers) {
+  container.innerHTML = "";
+  const roundNums = Object.keys(roundsObj).map(Number).sort((a,b) => isLosers ? b-a : a-b);
+  if (!roundNums.length) return;
+
+  for (let ri = 0; ri < roundNums.length; ri++) {
+    const r = roundNums[ri];
+    const matches = roundsObj[r];
+
+    // Round column
+    const roundDiv = document.createElement("div");
+    roundDiv.className = "round";
+
+    const hdr = document.createElement("div");
+    hdr.className = "round-hdr";
+    hdr.textContent = isLosers ? "Losers R" + Math.abs(r) : "Winners R" + r;
+    roundDiv.appendChild(hdr);
+
+    const matchesDiv = document.createElement("div");
+    matchesDiv.className = "round-matches";
+    for (const m of matches) {
+      matchesDiv.appendChild(makeMatchCard(m));
+    }
+    roundDiv.appendChild(matchesDiv);
+    container.appendChild(roundDiv);
+
+    // Draw connector lines between this round and the next
+    if (ri < roundNums.length - 1) {
+      const nextR = roundNums[ri + 1];
+      const nextCount = roundsObj[nextR].length;
+      const thisCount = matches.length;
+
+      const connCol = document.createElement("div");
+      connCol.className = "connector-col";
+      container.appendChild(connCol);
+
+      // We draw SVG lines after layout so we know positions
+      requestAnimationFrame(() => drawConnectors(connCol, matchesDiv, container, roundNums, ri, roundsObj, isLosers));
+    }
+  }
+}
+
+function drawConnectors(connCol, prevMatchesDiv, container, roundNums, ri, roundsObj, isLosers) {
+  const prevCards = prevMatchesDiv.querySelectorAll(".match-card");
+  // Find the next round's matches div
+  const allRoundDivs = container.querySelectorAll(".round");
+  const nextRoundDiv = allRoundDivs[ri + 1];
+  if (!nextRoundDiv) return;
+  const nextMatchesDiv = nextRoundDiv.querySelector(".round-matches");
+  const nextCards = nextMatchesDiv.querySelectorAll(".match-card");
+
+  const connRect = connCol.getBoundingClientRect();
+  if (connRect.height === 0) return;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", connRect.width);
+  svg.setAttribute("height", connRect.height);
+  svg.style.position = "absolute";
+  svg.style.top = "0";
+  svg.style.left = "0";
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  connCol.appendChild(svg);
+
+  const w = connRect.width;
+
+  // If this is a standard bracket (2 matches feed into 1), draw traditional connectors
+  // Otherwise just draw horizontal lines
+  if (prevCards.length === nextCards.length * 2) {
+    // Classic bracket merge: pairs of matches -> one match
+    for (let i = 0; i < nextCards.length; i++) {
+      const top = prevCards[i * 2];
+      const bot = prevCards[i * 2 + 1];
+      const dest = nextCards[i];
+      if (!top || !bot || !dest) continue;
+
+      const topY = top.getBoundingClientRect().top + top.getBoundingClientRect().height / 2 - connRect.top;
+      const botY = bot.getBoundingClientRect().top + bot.getBoundingClientRect().height / 2 - connRect.top;
+      const destY = dest.getBoundingClientRect().top + dest.getBoundingClientRect().height / 2 - connRect.top;
+      const midX = w / 2;
+
+      // Horizontal from top match
+      addLine(svg, 0, topY, midX, topY);
+      // Horizontal from bottom match
+      addLine(svg, 0, botY, midX, botY);
+      // Vertical connecting them
+      addLine(svg, midX, topY, midX, botY);
+      // Horizontal to next match
+      addLine(svg, midX, destY, w, destY);
+    }
+  } else {
+    // Non-standard (losers bracket often has 1:1 rounds) — just draw straight lines
+    for (let i = 0; i < Math.min(prevCards.length, nextCards.length); i++) {
+      const src = prevCards[i];
+      const dest = nextCards[i];
+      if (!src || !dest) continue;
+      const srcY = src.getBoundingClientRect().top + src.getBoundingClientRect().height / 2 - connRect.top;
+      const destY = dest.getBoundingClientRect().top + dest.getBoundingClientRect().height / 2 - connRect.top;
+      addLine(svg, 0, srcY, w / 2, srcY);
+      if (Math.abs(srcY - destY) > 2) {
+        addLine(svg, w / 2, srcY, w / 2, destY);
+      }
+      addLine(svg, w / 2, destY, w, destY);
+    }
+  }
+}
+
+function addLine(svg, x1, y1, x2, y2) {
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", x1);
+  line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2);
+  line.setAttribute("y2", y2);
+  svg.appendChild(line);
+}
+
+function renderGrandFinals(container, matches) {
+  container.innerHTML = "";
+  if (!matches.length) return;
+  const roundDiv = document.createElement("div");
+  roundDiv.className = "round";
+  const hdr = document.createElement("div");
+  hdr.className = "round-hdr";
+  hdr.textContent = "Grand Finals";
+  roundDiv.appendChild(hdr);
+  const matchesDiv = document.createElement("div");
+  matchesDiv.className = "round-matches";
+  for (const m of matches) matchesDiv.appendChild(makeMatchCard(m));
+  roundDiv.appendChild(matchesDiv);
+  container.appendChild(roundDiv);
+}
+
 function openModal(m) {
   selectedMatchId = m.id;
   selectedFmt = null;
-  document.getElementById("modal-match-label").textContent = `${m.player1} vs ${m.player2}`;
+  document.getElementById("modal-match-label").textContent = (m.player1 || "TBD") + " vs " + (m.player2 || "TBD");
   document.getElementById("modal-start").disabled = true;
   document.querySelectorAll(".fmt-btn").forEach(b => b.classList.remove("selected"));
   document.getElementById("modal").classList.add("active");
@@ -1580,7 +1719,6 @@ document.getElementById("modal-start").addEventListener("click", async () => {
   }
 });
 
-// Auto-refresh every 30s
 loadBracket();
 setInterval(loadBracket, 30000);
 </script>
