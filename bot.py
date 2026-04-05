@@ -1281,120 +1281,142 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
 # ── /round-setup command ──────────────────────────────────────────────────────
 class RoundSetupView(discord.ui.View):
     def __init__(self, tournament: dict, tournament_id: str):
-        super().__init__(timeout=300)
+        super().__init__(timeout=600)
         self.tournament = tournament
         self.tournament_id = tournament_id
-        self.matchups = []  # list of (team1_dict, team2_dict, format_str)
-        self.selected_team1 = None
-        self.selected_team2 = None
-        self.selected_format = None
+        self.all_teams = list(tournament.get("teams", []))
+        self.available_teams = list(self.all_teams)
+        self.matchups = []       # list of (team1_dict, team2_dict, format_str)
+        self.selected_team = None  # first click (higher seed)
+        self.format = "bo1"
+        self.rebuild_buttons()
 
-        teams = tournament.get("teams", [])
-        team_options = [
-            discord.SelectOption(label=tm["team_name"][:100], value=tm["team_id"])
-            for tm in teams[:25]
-        ]
+    def rebuild_buttons(self):
+        self.clear_items()
 
-        self.team1_select = RoundTeamSelect(
-            team_options, placeholder="Higher seed (bans first)...", custom_id="round_team1", row=0,
-        )
-        self.team2_select = RoundTeamSelect(
-            team_options, placeholder="Lower seed...", custom_id="round_team2", row=1,
-        )
-        self.format_select = RoundFormatSelect(row=2)
-        self.add_item(self.team1_select)
-        self.add_item(self.team2_select)
-        self.add_item(self.format_select)
+        # Row 0-2: team buttons (up to 15 teams visible)
+        for i, team in enumerate(self.available_teams[:15]):
+            row = i // 5
+            is_selected = self.selected_team and team["team_id"] == self.selected_team["team_id"]
+            self.add_item(TeamButton(team, row=row, selected=is_selected))
+
+        # Row 3: format toggles
+        for fmt in ["bo1", "bo3", "bo5"]:
+            style = discord.ButtonStyle.primary if self.format == fmt else discord.ButtonStyle.secondary
+            self.add_item(FormatButton(fmt, style=style, row=3))
+
+        # Row 4: undo + start
+        self.add_item(UndoButton(row=4, disabled=len(self.matchups) == 0))
+        self.add_item(StartRoundButton(row=4, disabled=len(self.matchups) == 0))
 
     def build_embed(self):
         desc = ""
         if self.matchups:
             for i, (t1, t2, fmt) in enumerate(self.matchups):
                 desc += f"`{i+1}.` **{t1['team_name']}** vs **{t2['team_name']}** — {fmt.upper()}\n"
+        desc += "\n"
+
+        if self.selected_team:
+            desc += f"**{self.selected_team['team_name']}** selected as higher seed — now click their opponent."
+        elif self.available_teams:
+            desc += "Click a team to select them as **higher seed** (bans first)."
         else:
-            desc = "*No matches added yet.*"
+            desc += "All teams paired. Click **Start Round** to begin."
+
         embed = discord.Embed(
             title="Round Setup",
             description=desc,
             color=0x2B2D31,
         )
-        embed.set_footer(text="Select two teams and a format, then click Add Match. Click Start Round when ready.")
+        embed.set_footer(text=f"Format: {self.format.upper()}  |  {len(self.available_teams)} teams remaining")
         return embed
 
-    @discord.ui.button(label="Add Match", style=discord.ButtonStyle.success, row=3)
-    async def add_match(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_team1 or not self.selected_team2 or not self.selected_format:
-            await interaction.response.send_message("Select both teams and a format first.", ephemeral=True)
-            return
-        if self.selected_team1 == self.selected_team2:
-            await interaction.response.send_message("Can't match a team against itself.", ephemeral=True)
-            return
 
-        teams = self.tournament.get("teams", [])
-        t1 = next((tm for tm in teams if tm["team_id"] == self.selected_team1), None)
-        t2 = next((tm for tm in teams if tm["team_id"] == self.selected_team2), None)
-        if not t1 or not t2:
-            await interaction.response.send_message("Could not find selected teams.", ephemeral=True)
+class TeamButton(discord.ui.Button):
+    def __init__(self, team: dict, row: int, selected: bool):
+        style = discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary
+        super().__init__(
+            label=team["team_name"][:80],
+            style=style,
+            custom_id=f"team_{team['team_id']}",
+            row=row,
+        )
+        self.team = team
+
+    async def callback(self, interaction: discord.Interaction):
+        view: RoundSetupView = self.view
+
+        if view.selected_team is None:
+            # First click — select as higher seed
+            view.selected_team = self.team
+        elif view.selected_team["team_id"] == self.team["team_id"]:
+            # Clicked same team again — deselect
+            view.selected_team = None
+        else:
+            # Second click — create matchup
+            view.matchups.append((view.selected_team, self.team, view.format))
+            view.available_teams = [
+                t for t in view.available_teams
+                if t["team_id"] not in (view.selected_team["team_id"], self.team["team_id"])
+            ]
+            view.selected_team = None
+
+        view.rebuild_buttons()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class FormatButton(discord.ui.Button):
+    def __init__(self, fmt: str, style: discord.ButtonStyle, row: int):
+        super().__init__(label=fmt.upper(), style=style, custom_id=f"fmt_{fmt}", row=row)
+        self.fmt = fmt
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.format = self.fmt
+        self.view.rebuild_buttons()
+        await interaction.response.edit_message(embed=self.view.build_embed(), view=self.view)
+
+
+class UndoButton(discord.ui.Button):
+    def __init__(self, row: int, disabled: bool):
+        super().__init__(label="Undo", style=discord.ButtonStyle.danger, custom_id="round_undo", row=row, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: RoundSetupView = self.view
+        if not view.matchups:
+            await interaction.response.defer()
             return
+        t1, t2, _ = view.matchups.pop()
+        view.available_teams.append(t1)
+        view.available_teams.append(t2)
+        view.selected_team = None
+        view.rebuild_buttons()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
-        self.matchups.append((t1, t2, self.selected_format))
-        self.selected_team1 = None
-        self.selected_team2 = None
-        self.selected_format = None
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(label="Start Round", style=discord.ButtonStyle.primary, row=3)
-    async def start_round(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.matchups:
+class StartRoundButton(discord.ui.Button):
+    def __init__(self, row: int, disabled: bool):
+        super().__init__(label="Start Round", style=discord.ButtonStyle.primary, custom_id="round_start", row=row, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: RoundSetupView = self.view
+        if not view.matchups:
             await interaction.response.send_message("Add at least one match first.", ephemeral=True)
             return
 
-        for child in self.children:
+        # Disable everything
+        for child in view.children:
             child.disabled = True
-        await interaction.response.edit_message(
-            embed=self.build_embed(),
-            view=self,
-        )
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
         guild = interaction.guild
         channels = []
-        for t1, t2, fmt in self.matchups:
-            ch = await create_match(guild, t1, t2, self.tournament, fmt)
+        for t1, t2, fmt in view.matchups:
+            ch = await create_match(guild, t1, t2, view.tournament, fmt)
             channels.append(ch)
 
         mentions = " ".join(ch.mention for ch in channels)
         await interaction.followup.send(f"**Round started!** {len(channels)} match(es) created:\n{mentions}")
-        self.stop()
-
-
-class RoundTeamSelect(discord.ui.Select):
-    def __init__(self, options, placeholder, custom_id, row):
-        super().__init__(placeholder=placeholder, custom_id=custom_id, options=options, row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        if "team1" in self.custom_id:
-            self.view.selected_team1 = self.values[0]
-        else:
-            self.view.selected_team2 = self.values[0]
-        await interaction.response.defer()
-
-
-class RoundFormatSelect(discord.ui.Select):
-    def __init__(self, row):
-        super().__init__(
-            placeholder="Format...",
-            custom_id="round_format",
-            options=[
-                discord.SelectOption(label="BO1", value="bo1"),
-                discord.SelectOption(label="BO3", value="bo3"),
-                discord.SelectOption(label="BO5", value="bo5"),
-            ],
-            row=row,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        self.view.selected_format = self.values[0]
-        await interaction.response.defer()
+        view.stop()
 
 
 @bot.tree.command(
