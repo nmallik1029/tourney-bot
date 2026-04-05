@@ -959,6 +959,14 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
     await interaction.response.send_message(f"Tournament `{t_id}` has been deleted.", ephemeral=True)
 
 
+# ── Error handler ─────────────────────────────────────────────────────────────
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    import traceback
+    traceback.print_exc()
+    print(f"[Error] {error}")
+
+
 # ── Bot ready ──────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
