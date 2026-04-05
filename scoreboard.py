@@ -35,7 +35,15 @@ C_DEATH = 780
 C_OBJ   = 880
 C_DMG   = 1000
 
-BG_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "scoreboard_bg.png")
+MAPS_DIR        = os.path.join(os.path.dirname(__file__), "maps")
+BG_IMAGE_PATH   = os.path.join(os.path.dirname(__file__), "scoreboard_bg.png")
+
+def get_bg_for_map(map_name: str) -> str:
+    """Return the map-specific background if it exists, otherwise the default."""
+    map_bg = os.path.join(MAPS_DIR, f"{map_name.lower()}.png")
+    if os.path.exists(map_bg):
+        return map_bg
+    return BG_IMAGE_PATH
 
 ROW1_H = 70
 ROW2_H = 38
@@ -71,9 +79,10 @@ def draw_scoreboard(
 
     img = Image.new("RGBA", (W, total_h), (0, 0, 0, 0))
 
-    if os.path.exists(BG_IMAGE_PATH):
+    bg_path = get_bg_for_map(map_name)
+    if os.path.exists(bg_path):
         try:
-            bg = Image.open(BG_IMAGE_PATH).convert("RGBA").resize((W, total_h))
+            bg = Image.open(bg_path).convert("RGBA").resize((W, total_h))
             overlay = Image.new("RGBA", (W, total_h), (0, 0, 0, 120))
             bg = Image.alpha_composite(bg, overlay)
             img = Image.alpha_composite(img, bg)
