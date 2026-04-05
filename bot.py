@@ -688,175 +688,7 @@ async def on_message(message: discord.Message):
 
 
 # ── /tournament-start ──────────────────────────────────────────────────────────
-class SeedingView(discord.ui.View):
-    """Interactive seeding panel — select a team, move it up/down, then confirm to start."""
-    def __init__(self, tournament_id: str, tournament: dict, interaction_user_id: int):
-        super().__init__(timeout=600)
-        self.tournament_id = tournament_id
-        self.tournament = tournament
-        self.interaction_user_id = interaction_user_id
-        self.seeded_teams = list(tournament.get("teams", []))
-        self.selected_index = None
-        self._rebuild()
-
-    def _rebuild(self):
-        self.clear_items()
-        options = []
-        for i, tm in enumerate(self.seeded_teams[:25]):
-            label = f"{i+1}. {tm['team_name']}"[:100]
-            options.append(discord.SelectOption(label=label, value=str(i)))
-        self.add_item(SeedTeamSelect(options))
-        self.add_item(SeedMoveButton("up", disabled=self.selected_index is None or self.selected_index == 0))
-        self.add_item(SeedMoveButton("down", disabled=self.selected_index is None or self.selected_index == len(self.seeded_teams) - 1))
-        self.add_item(SeedConfirmButton())
-
-    def build_embed(self):
-        lines = []
-        for i, tm in enumerate(self.seeded_teams):
-            prefix = "▸ " if i == self.selected_index else "  "
-            lines.append(f"`{prefix}{i+1:>2}.` **{tm['team_name']}**")
-        embed = discord.Embed(
-            title="Seeding — Reorder Teams",
-            description="\n".join(lines),
-            color=0x2B2D31,
-        )
-        embed.set_footer(text="Select a team, use ▲/▼ to move, then Confirm to create the bracket.")
-        return embed
-
-
-class SeedTeamSelect(discord.ui.Select):
-    def __init__(self, options):
-        super().__init__(placeholder="Select a team to move...", options=options, row=0)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: SeedingView = self.view
-        view.selected_index = int(self.values[0])
-        view._rebuild()
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-
-
-class SeedMoveButton(discord.ui.Button):
-    def __init__(self, direction: str, disabled: bool):
-        label = "▲ Move Up" if direction == "up" else "▼ Move Down"
-        super().__init__(label=label, style=discord.ButtonStyle.secondary, disabled=disabled, row=1,
-                         custom_id=f"seed_move_{direction}")
-        self.direction = direction
-
-    async def callback(self, interaction: discord.Interaction):
-        view: SeedingView = self.view
-        idx = view.selected_index
-        if idx is None:
-            await interaction.response.defer()
-            return
-        if self.direction == "up" and idx > 0:
-            view.seeded_teams[idx], view.seeded_teams[idx - 1] = view.seeded_teams[idx - 1], view.seeded_teams[idx]
-            view.selected_index = idx - 1
-        elif self.direction == "down" and idx < len(view.seeded_teams) - 1:
-            view.seeded_teams[idx], view.seeded_teams[idx + 1] = view.seeded_teams[idx + 1], view.seeded_teams[idx]
-            view.selected_index = idx + 1
-        view._rebuild()
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-
-
-class SeedConfirmButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Confirm & Start", style=discord.ButtonStyle.success, row=1, custom_id="seed_confirm")
-
-    async def callback(self, interaction: discord.Interaction):
-        view: SeedingView = self.view
-        if interaction.user.id != view.interaction_user_id:
-            await interaction.response.send_message("Only the organizer can confirm.", ephemeral=True)
-            return
-
-        for child in view.children:
-            child.disabled = True
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-
-        t = view.tournament
-        t_id = view.tournament_id
-        t["open"] = False
-        t["teams"] = view.seeded_teams
-        save_tournaments()
-
-        team_count = len(t["teams"])
-        guild = interaction.guild
-        staff_role = guild.get_role(STAFF_ROLE_ID)
-        t_cat, a_cat = get_categories(guild)
-
-        read_only = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(send_messages=True, view_channel=True),
-        }
-        admin_perms = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        }
-        if staff_role:
-            admin_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-        updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only, category=t_cat)
-        admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms, category=a_cat)
-
-        t["updates_channel_id"] = updates_channel.id
-        t["admin_channel_id"] = admin_channel.id
-        save_tournaments()
-
-        # Generate admin token for bracket page
-        t["admin_token"] = str(uuid.uuid4())
-        save_tournaments()
-
-        # Create Challonge bracket
-        slug = re.sub(r"[^a-z0-9]", "_", t["name"].lower()).strip("_")[:60]
-        try:
-            print(f"[Challonge] Creating tournament: {t['name']} ({slug})")
-            ch_tourney = await challonge_create_tournament(t["name"], slug)
-            challonge_id = ch_tourney["id"]
-            t["challonge_id"] = challonge_id
-            t["challonge_url"] = ch_tourney.get("full_challonge_url", f"https://krunker-biweeklies.challonge.com/{slug}")
-            print(f"[Challonge] Tournament created: {challonge_id}")
-
-            participants = [
-                {"name": tm["team_name"], "seed": i + 1, "misc": tm["team_id"]}
-                for i, tm in enumerate(view.seeded_teams)
-            ]
-            print(f"[Challonge] Adding {len(participants)} participants...")
-            added = await challonge_add_participants(challonge_id, participants)
-            print(f"[Challonge] Participants added: {len(added)}")
-
-            # Build mapping: team_id -> challonge participant_id
-            participant_map = {}
-            if isinstance(added, list):
-                for entry in added:
-                    p = entry.get("participant", entry)
-                    if p.get("misc"):
-                        participant_map[p["misc"]] = p["id"]
-            t["challonge_participant_map"] = participant_map
-            print(f"[Challonge] Participant map: {participant_map}")
-
-            print(f"[Challonge] Starting tournament...")
-            await challonge_start(challonge_id)
-            save_tournaments()
-            print(f"[Challonge] Tournament started successfully")
-
-            bracket_msg = f"**{t['name']}** has started with {team_count} teams!\n**Bracket:** {t['challonge_url']}"
-        except Exception as e:
-            print(f"[Challonge] Error: {e}")
-            import traceback
-            traceback.print_exc()
-            bracket_msg = f"**{t['name']}** has started with {team_count} teams.\n⚠️ Challonge bracket creation failed: {e}"
-
-        signups_channel = guild.get_channel(t["signups_channel_id"])
-        if signups_channel:
-            await signups_channel.send(f"Sign-ups closed — {team_count} team{'s' if team_count != 1 else ''} registered.")
-
-        await updates_channel.send(bracket_msg)
-        await interaction.followup.send(
-            f"Tournament started.\nUpdates: {updates_channel.mention}\nAdmin: {admin_channel.mention}"
-            f"\nBracket: {t.get('challonge_url', 'N/A')}"
-            f"\n**Admin Panel:** {RAILWAY_BASE}/admin/{t_id}?token={t['admin_token']}",
-            ephemeral=True,
-        )
-        view.stop()
+    # Old Discord-based seeding removed — now handled via web seeding page
 
 
 @bot.tree.command(name="tournament-start", description="Close sign-ups and start the tournament.", guild=discord.Object(id=SERVER_ID))
@@ -876,8 +708,16 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
         await interaction.response.send_message("This tournament has already started.", ephemeral=True)
         return
 
-    view = SeedingView(tournament_id=t_id, tournament=t, interaction_user_id=interaction.user.id)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    # Generate admin token early so we can send the seeding URL
+    if not t.get("admin_token"):
+        t["admin_token"] = str(uuid.uuid4())
+        save_tournaments()
+
+    seeding_url = f"{RAILWAY_BASE}/admin/{t_id}/seeding?token={t['admin_token']}"
+    await interaction.response.send_message(
+        f"**Open the seeding page to reorder teams and start the bracket:**\n{seeding_url}",
+        ephemeral=True,
+    )
 
 
 MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
@@ -1729,11 +1569,330 @@ setInterval(loadBracket, 30000);
 </html>"""
 
 
+SEEDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seeding — Tournament Admin</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; min-height: 100vh; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9rem; }
+
+  .seeding-list { max-width: 500px; margin: 0 auto; }
+  .seed-item {
+    display: flex; align-items: center; gap: 12px;
+    background: #0f1a30; border: 1px solid #2a2a4a; border-radius: 6px;
+    padding: 10px 14px; margin-bottom: 6px; cursor: grab; user-select: none;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+  }
+  .seed-item:active { cursor: grabbing; }
+  .seed-item.dragging { opacity: 0.4; transform: scale(0.97); }
+  .seed-item.drag-over { border-color: #f09030; background: #162040; }
+  .seed-num {
+    font-size: 1.1rem; font-weight: 700; color: #f09030; min-width: 28px;
+    text-align: center;
+  }
+  .seed-name { flex: 1; font-size: 0.95rem; }
+  .seed-players { color: #666; font-size: 0.75rem; }
+  .seed-handle { color: #444; font-size: 1.2rem; cursor: grab; }
+
+  .seed-arrows { display: flex; flex-direction: column; gap: 2px; }
+  .seed-arrows button {
+    background: #1a1a2e; border: 1px solid #2a2a4a; color: #888; width: 28px; height: 22px;
+    border-radius: 3px; cursor: pointer; font-size: 0.7rem; display: flex; align-items: center;
+    justify-content: center; transition: all 0.15s;
+  }
+  .seed-arrows button:hover { border-color: #f09030; color: #f09030; }
+
+  .confirm-area { max-width: 500px; margin: 24px auto 0; text-align: center; }
+  .confirm-btn {
+    padding: 12px 40px; border-radius: 6px; border: none;
+    background: #4CAF50; color: #fff; font-size: 1.1rem; font-weight: 700;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .confirm-btn:hover { background: #45a049; }
+  .confirm-btn:disabled { background: #333; cursor: not-allowed; }
+  .confirm-status { margin-top: 12px; color: #888; font-size: 0.9rem; }
+  .confirm-status.error { color: #e74c3c; }
+</style>
+</head>
+<body>
+<h1 id="title">Loading...</h1>
+<p class="subtitle">Drag teams to reorder seeding, then confirm to create the bracket.</p>
+
+<div class="seeding-list" id="seeding-list"></div>
+
+<div class="confirm-area">
+  <button class="confirm-btn" id="confirm-btn" disabled>Confirm &amp; Create Bracket</button>
+  <p class="confirm-status" id="confirm-status"></p>
+</div>
+
+<script>
+const T_ID = "{{TOURNAMENT_ID}}";
+const TOKEN = "{{TOKEN}}";
+let teams = [];
+let dragIdx = null;
+
+async function loadTeams() {
+  const resp = await fetch(`/api/seeding/${T_ID}?token=${TOKEN}`);
+  if (!resp.ok) { document.getElementById("title").textContent = "Error loading teams"; return; }
+  const data = await resp.json();
+  document.getElementById("title").textContent = data.name + " — Seeding";
+  teams = data.teams;
+  renderList();
+  document.getElementById("confirm-btn").disabled = false;
+}
+
+function renderList() {
+  const list = document.getElementById("seeding-list");
+  list.innerHTML = "";
+  teams.forEach((t, i) => {
+    const item = document.createElement("div");
+    item.className = "seed-item";
+    item.draggable = true;
+    item.dataset.index = i;
+
+    const playerCount = t.player_count || "?";
+
+    item.innerHTML =
+      '<span class="seed-handle">&#9776;</span>' +
+      '<span class="seed-num">' + (i + 1) + '</span>' +
+      '<div style="flex:1"><div class="seed-name">' + esc(t.team_name) + '</div>' +
+      '<div class="seed-players">' + playerCount + ' players</div></div>' +
+      '<div class="seed-arrows">' +
+        '<button data-dir="up" data-idx="' + i + '"' + (i === 0 ? ' disabled' : '') + '>&#9650;</button>' +
+        '<button data-dir="down" data-idx="' + i + '"' + (i === teams.length - 1 ? ' disabled' : '') + '>&#9660;</button>' +
+      '</div>';
+
+    // Drag events
+    item.addEventListener("dragstart", e => { dragIdx = i; item.classList.add("dragging"); });
+    item.addEventListener("dragend", () => { dragIdx = null; document.querySelectorAll(".seed-item").forEach(el => el.classList.remove("dragging", "drag-over")); });
+    item.addEventListener("dragover", e => { e.preventDefault(); item.classList.add("drag-over"); });
+    item.addEventListener("dragleave", () => item.classList.remove("drag-over"));
+    item.addEventListener("drop", e => {
+      e.preventDefault();
+      item.classList.remove("drag-over");
+      if (dragIdx !== null && dragIdx !== i) {
+        const moved = teams.splice(dragIdx, 1)[0];
+        teams.splice(i, 0, moved);
+        renderList();
+      }
+    });
+
+    // Arrow button events
+    item.querySelectorAll(".seed-arrows button").forEach(btn => {
+      btn.addEventListener("click", e => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.idx);
+        const dir = btn.dataset.dir;
+        if (dir === "up" && idx > 0) {
+          [teams[idx], teams[idx - 1]] = [teams[idx - 1], teams[idx]];
+        } else if (dir === "down" && idx < teams.length - 1) {
+          [teams[idx], teams[idx + 1]] = [teams[idx + 1], teams[idx]];
+        }
+        renderList();
+      });
+    });
+
+    list.appendChild(item);
+  });
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+document.getElementById("confirm-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("confirm-btn");
+  const status = document.getElementById("confirm-status");
+  btn.disabled = true;
+  btn.textContent = "Creating bracket...";
+  status.textContent = "Setting up channels, Challonge bracket, and participants...";
+  status.className = "confirm-status";
+
+  try {
+    const teamOrder = teams.map(t => t.team_id);
+    const resp = await fetch("/api/confirm-seeding", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ tournament_id: T_ID, token: TOKEN, team_order: teamOrder }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      status.textContent = "Bracket created! Redirecting...";
+      setTimeout(() => {
+        window.location.href = `/admin/${T_ID}?token=${TOKEN}`;
+      }, 1500);
+    } else {
+      status.textContent = "Error: " + (data.error || "Unknown error");
+      status.className = "confirm-status error";
+      btn.textContent = "Confirm & Create Bracket";
+      btn.disabled = false;
+    }
+  } catch(e) {
+    status.textContent = "Error: " + e.message;
+    status.className = "confirm-status error";
+    btn.textContent = "Confirm & Create Bracket";
+    btn.disabled = false;
+  }
+});
+
+loadTeams();
+</script>
+</body>
+</html>"""
+
+
+async def handle_admin_seeding(request: web.Request) -> web.Response:
+    t_id = request.match_info["tournament_id"].upper()
+    token = request.query.get("token", "")
+    t = tournaments.get(t_id)
+    if not t or t.get("admin_token") != token:
+        return web.Response(status=403, text="Invalid tournament or token.")
+    if t.get("challonge_id"):
+        # Already started — redirect to bracket
+        raise web.HTTPFound(f"/admin/{t_id}?token={token}")
+    html = SEEDING_HTML.replace("{{TOURNAMENT_ID}}", t_id).replace("{{TOKEN}}", token)
+    return web.Response(content_type="text/html", text=html)
+
+
+async def handle_api_seeding(request: web.Request) -> web.Response:
+    t_id = request.match_info["tournament_id"].upper()
+    token = request.query.get("token", "")
+    t = tournaments.get(t_id)
+    if not t or t.get("admin_token") != token:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    team_list = []
+    for tm in t.get("teams", []):
+        team_list.append({
+            "team_id": tm["team_id"],
+            "team_name": tm["team_name"],
+            "player_count": len(tm.get("player_ids", [])),
+        })
+    return web.json_response({"name": t["name"], "teams": team_list})
+
+
+async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+
+    t_id = body.get("tournament_id", "").upper()
+    token = body.get("token", "")
+    team_order = body.get("team_order", [])
+
+    t = tournaments.get(t_id)
+    if not t or t.get("admin_token") != token:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    if t.get("challonge_id"):
+        return web.json_response({"error": "bracket already created"}, status=400)
+
+    # Reorder teams based on the submitted order
+    team_map = {tm["team_id"]: tm for tm in t.get("teams", [])}
+    seeded_teams = []
+    for tid in team_order:
+        if tid in team_map:
+            seeded_teams.append(team_map[tid])
+    # Append any teams not in the order (safety net)
+    for tm in t.get("teams", []):
+        if tm["team_id"] not in [st["team_id"] for st in seeded_teams]:
+            seeded_teams.append(tm)
+
+    t["open"] = False
+    t["teams"] = seeded_teams
+    save_tournaments()
+
+    # Create channels
+    guild = bot.get_guild(SERVER_ID)
+    if not guild:
+        return web.json_response({"error": "bot not in guild"}, status=500)
+
+    staff_role = guild.get_role(STAFF_ROLE_ID)
+    t_cat, a_cat = get_categories(guild)
+
+    read_only = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(send_messages=True, view_channel=True),
+    }
+    admin_perms = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    if staff_role:
+        admin_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+    try:
+        updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only, category=t_cat)
+        admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms, category=a_cat)
+        t["updates_channel_id"] = updates_channel.id
+        t["admin_channel_id"] = admin_channel.id
+        save_tournaments()
+    except Exception as e:
+        return web.json_response({"error": f"channel creation failed: {e}"}, status=500)
+
+    # Create Challonge bracket
+    team_count = len(seeded_teams)
+    ch_name = f"krunkerbiweekly-{t['name']}"
+    slug = re.sub(r"[^a-z0-9]", "_", ch_name.lower()).strip("_")[:60]
+    try:
+        print(f"[Challonge] Creating tournament: {ch_name} ({slug})")
+        ch_tourney = await challonge_create_tournament(ch_name, slug)
+        challonge_id = ch_tourney["id"]
+        t["challonge_id"] = challonge_id
+        t["challonge_url"] = ch_tourney.get("full_challonge_url", f"https://krunker-biweeklies.challonge.com/{slug}")
+        print(f"[Challonge] Tournament created: {challonge_id}")
+
+        participants = [
+            {"name": tm["team_name"], "seed": i + 1, "misc": tm["team_id"]}
+            for i, tm in enumerate(seeded_teams)
+        ]
+        print(f"[Challonge] Adding {len(participants)} participants...")
+        added = await challonge_add_participants(challonge_id, participants)
+        print(f"[Challonge] Participants added: {len(added)}")
+
+        participant_map = {}
+        if isinstance(added, list):
+            for entry in added:
+                p = entry.get("participant", entry)
+                if p.get("misc"):
+                    participant_map[p["misc"]] = p["id"]
+        t["challonge_participant_map"] = participant_map
+
+        await challonge_start(challonge_id)
+        save_tournaments()
+        print(f"[Challonge] Tournament started successfully")
+
+        bracket_msg = f"**{t['name']}** has started with {team_count} teams!\n**Bracket:** {t['challonge_url']}"
+    except Exception as e:
+        print(f"[Challonge] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        bracket_msg = f"**{t['name']}** has started with {team_count} teams.\n⚠️ Challonge bracket creation failed: {e}"
+
+    # Post to Discord channels
+    signups_ch = guild.get_channel(t.get("signups_channel_id"))
+    if signups_ch:
+        await signups_ch.send(f"Sign-ups closed — {team_count} team{'s' if team_count != 1 else ''} registered.")
+
+    updates_ch = guild.get_channel(t.get("updates_channel_id"))
+    if updates_ch:
+        await updates_ch.send(bracket_msg)
+
+    return web.json_response({"ok": True})
+
+
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/krunker", handle_krunker_webhook)
     app.router.add_get("/launch", handle_launch)
+    app.router.add_get("/admin/{tournament_id}/seeding", handle_admin_seeding)
     app.router.add_get("/admin/{tournament_id}", handle_admin_bracket)
+    app.router.add_get("/api/seeding/{tournament_id}", handle_api_seeding)
+    app.router.add_post("/api/confirm-seeding", handle_api_confirm_seeding)
     app.router.add_get("/api/tournament/{tournament_id}", handle_api_tournament)
     app.router.add_post("/api/start-match", handle_api_start_match)
     runner = web.AppRunner(app)
