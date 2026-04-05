@@ -6,8 +6,10 @@ import json
 import re
 import random
 import asyncio
+import os
 import urllib.parse
 from pathlib import Path
+import aiohttp
 from aiohttp import web
 
 # ── Bot setup ──────────────────────────────────────────────────────────────────
@@ -45,6 +47,71 @@ tournaments: dict[str, dict] = load_tournaments()
 
 STAFF_ROLE_ID = 1489047073142739035
 SERVER_ID = 1489359260348579840
+
+# ── Challonge API ─────────────────────────────────────────────────────────────
+CHALLONGE_API_KEY = os.environ.get("CHALLONGE_API_KEY", "")
+CHALLONGE_BASE = "https://api.challonge.com/v1"
+
+
+async def challonge_request(method: str, path: str, **kwargs) -> dict | list:
+    url = f"{CHALLONGE_BASE}{path}"
+    params = kwargs.pop("params", {})
+    params["api_key"] = CHALLONGE_API_KEY
+    async with aiohttp.ClientSession() as session:
+        async with session.request(method, url, params=params, **kwargs) as resp:
+            data = await resp.json()
+            if resp.status >= 400:
+                print(f"[Challonge] {method} {path} → {resp.status}: {data}")
+            return data
+
+
+async def challonge_create_tournament(name: str, url_slug: str) -> dict:
+    data = await challonge_request("POST", "/tournaments.json", json={
+        "tournament": {
+            "name": name,
+            "url": url_slug,
+            "tournament_type": "double elimination",
+            "private": False,
+        }
+    })
+    return data.get("tournament", data)
+
+
+async def challonge_add_participants(challonge_id, teams_with_seeds: list[dict]) -> list:
+    """teams_with_seeds: [{"name": "...", "seed": 1, "misc": "team_id"}, ...]"""
+    data = await challonge_request("POST", f"/tournaments/{challonge_id}/participants/bulk_add.json", json={
+        "participants": teams_with_seeds,
+    })
+    return data
+
+
+async def challonge_start(challonge_id) -> dict:
+    data = await challonge_request("POST", f"/tournaments/{challonge_id}/start.json", params={
+        "include_matches": 1, "include_participants": 1,
+    })
+    return data.get("tournament", data)
+
+
+async def challonge_get_matches(challonge_id, state="open") -> list:
+    data = await challonge_request("GET", f"/tournaments/{challonge_id}/matches.json", params={
+        "state": state,
+    })
+    return [m["match"] for m in data] if isinstance(data, list) else []
+
+
+async def challonge_get_participants(challonge_id) -> list:
+    data = await challonge_request("GET", f"/tournaments/{challonge_id}/participants.json")
+    return [p["participant"] for p in data] if isinstance(data, list) else []
+
+
+async def challonge_update_match(challonge_id, match_id, scores_csv: str, winner_id: int) -> dict:
+    data = await challonge_request("PUT", f"/tournaments/{challonge_id}/matches/{match_id}.json", json={
+        "match": {
+            "scores_csv": scores_csv,
+            "winner_id": winner_id,
+        }
+    })
+    return data.get("match", data)
 
 
 pending_registrations: dict[int, dict] = {}
@@ -609,6 +676,164 @@ async def on_message(message: discord.Message):
 
 
 # ── /tournament-start ──────────────────────────────────────────────────────────
+class SeedingView(discord.ui.View):
+    """Interactive seeding panel — select a team, move it up/down, then confirm to start."""
+    def __init__(self, tournament_id: str, tournament: dict, interaction_user_id: int):
+        super().__init__(timeout=600)
+        self.tournament_id = tournament_id
+        self.tournament = tournament
+        self.interaction_user_id = interaction_user_id
+        self.seeded_teams = list(tournament.get("teams", []))
+        self.selected_index = None
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+        options = []
+        for i, tm in enumerate(self.seeded_teams[:25]):
+            label = f"{i+1}. {tm['team_name']}"[:100]
+            options.append(discord.SelectOption(label=label, value=str(i)))
+        self.add_item(SeedTeamSelect(options))
+        self.add_item(SeedMoveButton("up", disabled=self.selected_index is None or self.selected_index == 0))
+        self.add_item(SeedMoveButton("down", disabled=self.selected_index is None or self.selected_index == len(self.seeded_teams) - 1))
+        self.add_item(SeedConfirmButton())
+
+    def build_embed(self):
+        lines = []
+        for i, tm in enumerate(self.seeded_teams):
+            prefix = "▸ " if i == self.selected_index else "  "
+            lines.append(f"`{prefix}{i+1:>2}.` **{tm['team_name']}**")
+        embed = discord.Embed(
+            title="Seeding — Reorder Teams",
+            description="\n".join(lines),
+            color=0x2B2D31,
+        )
+        embed.set_footer(text="Select a team, use ▲/▼ to move, then Confirm to create the bracket.")
+        return embed
+
+
+class SeedTeamSelect(discord.ui.Select):
+    def __init__(self, options):
+        super().__init__(placeholder="Select a team to move...", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: SeedingView = self.view
+        view.selected_index = int(self.values[0])
+        view._rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class SeedMoveButton(discord.ui.Button):
+    def __init__(self, direction: str, disabled: bool):
+        label = "▲ Move Up" if direction == "up" else "▼ Move Down"
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, disabled=disabled, row=1,
+                         custom_id=f"seed_move_{direction}")
+        self.direction = direction
+
+    async def callback(self, interaction: discord.Interaction):
+        view: SeedingView = self.view
+        idx = view.selected_index
+        if idx is None:
+            await interaction.response.defer()
+            return
+        if self.direction == "up" and idx > 0:
+            view.seeded_teams[idx], view.seeded_teams[idx - 1] = view.seeded_teams[idx - 1], view.seeded_teams[idx]
+            view.selected_index = idx - 1
+        elif self.direction == "down" and idx < len(view.seeded_teams) - 1:
+            view.seeded_teams[idx], view.seeded_teams[idx + 1] = view.seeded_teams[idx + 1], view.seeded_teams[idx]
+            view.selected_index = idx + 1
+        view._rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class SeedConfirmButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Confirm & Start", style=discord.ButtonStyle.success, row=1, custom_id="seed_confirm")
+
+    async def callback(self, interaction: discord.Interaction):
+        view: SeedingView = self.view
+        if interaction.user.id != view.interaction_user_id:
+            await interaction.response.send_message("Only the organizer can confirm.", ephemeral=True)
+            return
+
+        for child in view.children:
+            child.disabled = True
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+        t = view.tournament
+        t_id = view.tournament_id
+        t["open"] = False
+        t["teams"] = view.seeded_teams
+        save_tournaments()
+
+        team_count = len(t["teams"])
+        guild = interaction.guild
+        staff_role = guild.get_role(STAFF_ROLE_ID)
+        t_cat, a_cat = get_categories(guild)
+
+        read_only = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(send_messages=True, view_channel=True),
+        }
+        admin_perms = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        if staff_role:
+            admin_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only, category=t_cat)
+        admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms, category=a_cat)
+
+        t["updates_channel_id"] = updates_channel.id
+        t["admin_channel_id"] = admin_channel.id
+        save_tournaments()
+
+        # Create Challonge bracket
+        slug = re.sub(r"[^a-z0-9]", "_", t["name"].lower())[:50] + f"_{t_id.lower()}"
+        try:
+            ch_tourney = await challonge_create_tournament(t["name"], slug)
+            challonge_id = ch_tourney["id"]
+            t["challonge_id"] = challonge_id
+            t["challonge_url"] = ch_tourney.get("full_challonge_url", f"https://challonge.com/{slug}")
+
+            participants = [
+                {"name": tm["team_name"], "seed": i + 1, "misc": tm["team_id"]}
+                for i, tm in enumerate(view.seeded_teams)
+            ]
+            added = await challonge_add_participants(challonge_id, participants)
+
+            # Build mapping: team_id -> challonge participant_id
+            participant_map = {}
+            if isinstance(added, list):
+                for entry in added:
+                    p = entry.get("participant", entry)
+                    if p.get("misc"):
+                        participant_map[p["misc"]] = p["id"]
+            t["challonge_participant_map"] = participant_map
+
+            await challonge_start(challonge_id)
+            save_tournaments()
+
+            bracket_msg = f"**{t['name']}** has started with {team_count} teams!\n**Bracket:** {t['challonge_url']}"
+        except Exception as e:
+            print(f"[Challonge] Error creating bracket: {e}")
+            import traceback
+            traceback.print_exc()
+            bracket_msg = f"**{t['name']}** has started with {team_count} teams.\n⚠️ Challonge bracket creation failed: {e}"
+
+        signups_channel = guild.get_channel(t["signups_channel_id"])
+        if signups_channel:
+            await signups_channel.send(f"Sign-ups closed — {team_count} team{'s' if team_count != 1 else ''} registered.")
+
+        await updates_channel.send(bracket_msg)
+        await interaction.followup.send(
+            f"Tournament started.\nUpdates: {updates_channel.mention}\nAdmin: {admin_channel.mention}\nBracket: {t.get('challonge_url', 'N/A')}",
+            ephemeral=True,
+        )
+        view.stop()
+
+
 @bot.tree.command(name="tournament-start", description="Close sign-ups and start the tournament.", guild=discord.Object(id=SERVER_ID))
 @app_commands.describe(tournament_id="The tournament ID from /tournament-create")
 async def tournament_start(interaction: discord.Interaction, tournament_id: str):
@@ -626,48 +851,8 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
         await interaction.response.send_message("This tournament has already started.", ephemeral=True)
         return
 
-    t["open"] = False
-    team_count = len(t["teams"])
-    guild = interaction.guild
-    staff_role = guild.get_role(STAFF_ROLE_ID)
-    t_cat, a_cat = get_categories(guild)
-
-    read_only = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True),
-        guild.me: discord.PermissionOverwrite(send_messages=True, view_channel=True),
-    }
-    matches_perms = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=False),
-        guild.me: discord.PermissionOverwrite(send_messages=True, view_channel=True, add_reactions=True),
-    }
-    admin_perms = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-    }
-    if staff_role:
-        admin_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only, category=t_cat)
-    matches_channel = await guild.create_text_channel(name="tournament-matches", overwrites=matches_perms, slowmode_delay=600, category=t_cat)
-    admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms, category=a_cat)
-
-    t["updates_channel_id"] = updates_channel.id
-    t["matches_channel_id"] = matches_channel.id
-    t["admin_channel_id"] = admin_channel.id
-    save_tournaments()
-
-    signups_channel = guild.get_channel(t["signups_channel_id"])
-    if signups_channel:
-        await signups_channel.send(f"Sign-ups closed — {team_count} team{'s' if team_count != 1 else ''} registered.")
-
-    await updates_channel.send(
-        f"**{t['name']}** has started with {team_count} team{'s' if team_count != 1 else ''}.\nBracket coming soon."
-    )
-
-    await interaction.response.send_message(
-        f"Tournament started.\nUpdates: {updates_channel.mention}\nMatches: {matches_channel.mention}\nAdmin: {admin_channel.mention}",
-        ephemeral=True,
-    )
+    view = SeedingView(tournament_id=t_id, tournament=t, interaction_user_id=interaction.user.id)
+    await interaction.response.send_message(embed=view.build_embed(), view=view)
 
 
 MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
@@ -888,6 +1073,39 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                 await ch.send(f"**{winner_discord['team_name']}** won {score_str} against **{loser_discord['team_name']}**")
             print(f"[Webhook] Posted result: {winner_discord['team_name']} won {score_str} vs {loser_discord['team_name']}")
             break
+
+    # Report result to Challonge
+    challonge_id = matched_tournament.get("challonge_id")
+    participant_map = matched_tournament.get("challonge_participant_map", {})
+    if challonge_id and participant_map:
+        winner_ch_pid = participant_map.get(winner_discord.get("team_id"))
+        loser_ch_pid = participant_map.get(loser_discord.get("team_id"))
+
+        # Find the active match for these two teams
+        active_match = next(
+            (m for m in active_matches.values()
+             if m.get("challonge_match_id") and m.get("challonge_id") == challonge_id
+             and {m["teams"][0]["name"].lower(), m["teams"][1]["name"].lower()}
+             == {winner_discord["team_name"].lower(), loser_discord["team_name"].lower()}),
+            None,
+        )
+        ch_match_id = active_match["challonge_match_id"] if active_match else None
+
+        if ch_match_id and winner_ch_pid:
+            try:
+                # Challonge scores_csv: player1's score first
+                # Need to figure out which is player1 vs player2 in the Challonge match
+                open_matches = await challonge_get_matches(challonge_id, state="all")
+                ch_match = next((m for m in open_matches if m["id"] == ch_match_id), None)
+                if ch_match:
+                    if ch_match["player1_id"] == winner_ch_pid:
+                        csv = f"{winner_score}-{loser_score}"
+                    else:
+                        csv = f"{loser_score}-{winner_score}"
+                    await challonge_update_match(challonge_id, ch_match_id, csv, winner_ch_pid)
+                    print(f"[Challonge] Reported result for match {ch_match_id}")
+            except Exception as e:
+                print(f"[Challonge] Failed to report result: {e}")
 
     return web.Response(status=200, text="ok")
 
@@ -1209,7 +1427,7 @@ class HostMapButton(discord.ui.Button):
 
 
 # ── Match creation helper ─────────────────────────────────────────────────────
-async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, found_tournament: dict, fmt: str) -> discord.TextChannel:
+async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, found_tournament: dict, fmt: str, challonge_match_id: int = None) -> discord.TextChannel:
     """Create a match channel and start pick/ban. Returns the created channel."""
     t1_captain_id = found_t1["players"][0]["discord_id"]
     t2_captain_id = found_t2["players"][0]["discord_id"]
@@ -1261,6 +1479,9 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
         "channel_id": channel.id,
         "tournament_id": found_tournament["id"],
         "updates_channel_id": found_tournament.get("updates_channel_id"),
+        "challonge_match_id": challonge_match_id,
+        "challonge_id": found_tournament.get("challonge_id"),
+        "challonge_participant_map": found_tournament.get("challonge_participant_map", {}),
     }
     active_matches[match_id] = match
 
@@ -1279,153 +1500,59 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
 
 
 # ── /round-setup command ──────────────────────────────────────────────────────
-class RoundSetupView(discord.ui.View):
-    def __init__(self, tournament: dict, tournament_id: str):
-        super().__init__(timeout=600)
-        self.tournament = tournament
-        self.tournament_id = tournament_id
-        self.all_teams = list(tournament.get("teams", []))
-        self.available_teams = list(self.all_teams)
-        self.matchups = []       # list of (team1_dict, team2_dict, format_str)
-        self.selected_team = None  # first click (higher seed)
-        self.format = "bo1"
-        self.rebuild_buttons()
-
-    def rebuild_buttons(self):
-        self.clear_items()
-
-        # Row 0-2: team buttons (up to 15 teams visible)
-        for i, team in enumerate(self.available_teams[:15]):
-            row = i // 5
-            is_selected = self.selected_team and team["team_id"] == self.selected_team["team_id"]
-            self.add_item(TeamButton(team, row=row, selected=is_selected))
-
-        # Row 3: format toggles
-        for fmt in ["bo1", "bo3", "bo5"]:
-            style = discord.ButtonStyle.primary if self.format == fmt else discord.ButtonStyle.secondary
-            self.add_item(FormatButton(fmt, style=style, row=3))
-
-        # Row 4: undo + start
-        self.add_item(UndoButton(row=4, disabled=len(self.matchups) == 0))
-        self.add_item(StartRoundButton(row=4, disabled=len(self.matchups) == 0))
-
-    def build_embed(self):
-        desc = ""
-        if self.matchups:
-            for i, (t1, t2, fmt) in enumerate(self.matchups):
-                desc += f"`{i+1}.` **{t1['team_name']}** vs **{t2['team_name']}** — {fmt.upper()}\n"
-        desc += "\n"
-
-        if self.selected_team:
-            desc += f"**{self.selected_team['team_name']}** selected as higher seed — now click their opponent."
-        elif self.available_teams:
-            desc += "Click a team to select them as **higher seed** (bans first)."
-        else:
-            desc += "All teams paired. Click **Start Round** to begin."
-
-        embed = discord.Embed(
-            title="Round Setup",
-            description=desc,
-            color=0x2B2D31,
-        )
-        embed.set_footer(text=f"Format: {self.format.upper()}  |  {len(self.available_teams)} teams remaining")
-        return embed
-
-
-class TeamButton(discord.ui.Button):
-    def __init__(self, team: dict, row: int, selected: bool):
-        style = discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary
+class MatchStartButton(discord.ui.Button):
+    """Button representing a single open Challonge match — click to create the pick/ban channel."""
+    def __init__(self, match_data: dict, team1_name: str, team2_name: str,
+                 team1_dict: dict, team2_dict: dict, tournament: dict, fmt: str, row: int):
+        label = f"{match_data['identifier']}  {team1_name} vs {team2_name}"[:80]
         super().__init__(
-            label=team["team_name"][:80],
-            style=style,
-            custom_id=f"team_{team['team_id']}",
+            label=label,
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"mstart_{match_data['id']}",
             row=row,
         )
-        self.team = team
-
-    async def callback(self, interaction: discord.Interaction):
-        view: RoundSetupView = self.view
-
-        if view.selected_team is None:
-            # First click — select as higher seed
-            view.selected_team = self.team
-        elif view.selected_team["team_id"] == self.team["team_id"]:
-            # Clicked same team again — deselect
-            view.selected_team = None
-        else:
-            # Second click — create matchup
-            view.matchups.append((view.selected_team, self.team, view.format))
-            view.available_teams = [
-                t for t in view.available_teams
-                if t["team_id"] not in (view.selected_team["team_id"], self.team["team_id"])
-            ]
-            view.selected_team = None
-
-        view.rebuild_buttons()
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-
-
-class FormatButton(discord.ui.Button):
-    def __init__(self, fmt: str, style: discord.ButtonStyle, row: int):
-        super().__init__(label=fmt.upper(), style=style, custom_id=f"fmt_{fmt}", row=row)
+        self.match_data = match_data
+        self.team1_name = team1_name
+        self.team2_name = team2_name
+        self.team1_dict = team1_dict
+        self.team2_dict = team2_dict
+        self.tournament = tournament
         self.fmt = fmt
 
     async def callback(self, interaction: discord.Interaction):
-        self.view.format = self.fmt
-        self.view.rebuild_buttons()
-        await interaction.response.edit_message(embed=self.view.build_embed(), view=self.view)
+        # Disable this button immediately
+        self.disabled = True
+        self.style = discord.ButtonStyle.success
+        self.label = f"✓ {self.label}"
+        await interaction.response.edit_message(view=self.view)
+
+        ch = await create_match(
+            interaction.guild, self.team1_dict, self.team2_dict, self.tournament, self.fmt,
+            challonge_match_id=self.match_data["id"],
+        )
+        await interaction.followup.send(f"Match started: {ch.mention}", ephemeral=True)
 
 
-class UndoButton(discord.ui.Button):
-    def __init__(self, row: int, disabled: bool):
-        super().__init__(label="Undo", style=discord.ButtonStyle.danger, custom_id="round_undo", row=row, disabled=disabled)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: RoundSetupView = self.view
-        if not view.matchups:
-            await interaction.response.defer()
-            return
-        t1, t2, _ = view.matchups.pop()
-        view.available_teams.append(t1)
-        view.available_teams.append(t2)
-        view.selected_team = None
-        view.rebuild_buttons()
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-
-
-class StartRoundButton(discord.ui.Button):
-    def __init__(self, row: int, disabled: bool):
-        super().__init__(label="Start Round", style=discord.ButtonStyle.primary, custom_id="round_start", row=row, disabled=disabled)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: RoundSetupView = self.view
-        if not view.matchups:
-            await interaction.response.send_message("Add at least one match first.", ephemeral=True)
-            return
-
-        # Disable everything
-        for child in view.children:
-            child.disabled = True
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-
-        guild = interaction.guild
-        channels = []
-        for t1, t2, fmt in view.matchups:
-            ch = await create_match(guild, t1, t2, view.tournament, fmt)
-            channels.append(ch)
-
-        mentions = " ".join(ch.mention for ch in channels)
-        await interaction.followup.send(f"**Round started!** {len(channels)} match(es) created:\n{mentions}")
-        view.stop()
+class RoundSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
 
 
 @bot.tree.command(
     name="round-setup",
-    description="Set up a round of matches with an interactive panel.",
+    description="Show open matches from the bracket — click to start a match.",
     guild=discord.Object(id=SERVER_ID),
 )
-@app_commands.describe(tournament_id="The tournament ID")
-async def round_setup(interaction: discord.Interaction, tournament_id: str):
+@app_commands.describe(
+    tournament_id="The tournament ID",
+    format="Match format for this round",
+)
+@app_commands.choices(format=[
+    app_commands.Choice(name="BO1", value="bo1"),
+    app_commands.Choice(name="BO3", value="bo3"),
+    app_commands.Choice(name="BO5", value="bo5"),
+])
+async def round_setup(interaction: discord.Interaction, tournament_id: str, format: str):
     t_id = tournament_id.upper()
     if t_id not in tournaments:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
@@ -1436,12 +1563,76 @@ async def round_setup(interaction: discord.Interaction, tournament_id: str):
         await interaction.response.send_message("Tournament signups are still open. Start it first.", ephemeral=True)
         return
 
-    if len(t.get("teams", [])) < 2:
-        await interaction.response.send_message("Not enough teams registered.", ephemeral=True)
+    challonge_id = t.get("challonge_id")
+    if not challonge_id:
+        await interaction.response.send_message("No Challonge bracket linked to this tournament.", ephemeral=True)
         return
 
-    view = RoundSetupView(tournament=t, tournament_id=t_id)
-    await interaction.response.send_message(embed=view.build_embed(), view=view)
+    await interaction.response.defer(ephemeral=True)
+
+    matches = await challonge_get_matches(challonge_id, state="open")
+    if not matches:
+        await interaction.followup.send("No open matches right now.", ephemeral=True)
+        return
+
+    participants = await challonge_get_participants(challonge_id)
+    p_map = {p["id"]: p["name"] for p in participants}
+
+    # Reverse map: challonge participant_id -> local team dict
+    ch_to_local = {}
+    participant_map = t.get("challonge_participant_map", {})
+    for team_id, ch_pid in participant_map.items():
+        team_dict = next((tm for tm in t["teams"] if tm["team_id"] == team_id), None)
+        if team_dict:
+            ch_to_local[ch_pid] = team_dict
+
+    view = RoundSetupView()
+    embed_lines = []
+    added = 0
+
+    for m in matches:
+        if added >= 20:  # Discord button limit safety
+            break
+        p1_id = m.get("player1_id")
+        p2_id = m.get("player2_id")
+        if not p1_id or not p2_id:
+            continue
+
+        t1_name = p_map.get(p1_id, "???")
+        t2_name = p_map.get(p2_id, "???")
+        t1_dict = ch_to_local.get(p1_id)
+        t2_dict = ch_to_local.get(p2_id)
+        if not t1_dict or not t2_dict:
+            continue
+
+        row = added // 5
+        if row > 3:
+            break  # Max 4 rows for match buttons (row 4 reserved)
+
+        round_num = m.get("round", 0)
+        bracket = "W" if round_num > 0 else "L"
+        round_label = f"{bracket}R{abs(round_num)}"
+        embed_lines.append(f"`{m['identifier']}` **{t1_name}** vs **{t2_name}** — {round_label}")
+
+        view.add_item(MatchStartButton(
+            match_data=m,
+            team1_name=t1_name,
+            team2_name=t2_name,
+            team1_dict=t1_dict,
+            team2_dict=t2_dict,
+            tournament=t,
+            fmt=format,
+            row=row,
+        ))
+        added += 1
+
+    embed = discord.Embed(
+        title=f"Open Matches — {format.upper()}",
+        description="\n".join(embed_lines) if embed_lines else "No matches available.",
+        color=0x2B2D31,
+    )
+    embed.set_footer(text=f"Bracket: {t.get('challonge_url', 'N/A')}")
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ── Run ────────────────────────────────────────────────────────────────────────
