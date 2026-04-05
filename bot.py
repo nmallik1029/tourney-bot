@@ -798,8 +798,12 @@ class SeedConfirmButton(discord.ui.Button):
         t["admin_channel_id"] = admin_channel.id
         save_tournaments()
 
+        # Generate admin token for bracket page
+        t["admin_token"] = str(uuid.uuid4())
+        save_tournaments()
+
         # Create Challonge bracket
-        slug = re.sub(r"[^a-z0-9]", "_", t["name"].lower())[:50] + f"_{t_id.lower()}"
+        slug = re.sub(r"[^a-z0-9]", "_", t["name"].lower()).strip("_")[:60]
         try:
             print(f"[Challonge] Creating tournament: {t['name']} ({slug})")
             ch_tourney = await challonge_create_tournament(t["name"], slug)
@@ -844,7 +848,9 @@ class SeedConfirmButton(discord.ui.Button):
 
         await updates_channel.send(bracket_msg)
         await interaction.followup.send(
-            f"Tournament started.\nUpdates: {updates_channel.mention}\nAdmin: {admin_channel.mention}\nBracket: {t.get('challonge_url', 'N/A')}",
+            f"Tournament started.\nUpdates: {updates_channel.mention}\nAdmin: {admin_channel.mention}"
+            f"\nBracket: {t.get('challonge_url', 'N/A')}"
+            f"\n**Admin Panel:** {RAILWAY_BASE}/admin/{t_id}?token={t['admin_token']}",
             ephemeral=True,
         )
         view.stop()
@@ -1098,38 +1104,71 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
             print(f"[Webhook] Posted result: {winner_discord['team_name']} won {score_str} vs {loser_discord['team_name']}")
             break
 
-    # Report result to Challonge
-    challonge_id = matched_tournament.get("challonge_id")
-    participant_map = matched_tournament.get("challonge_participant_map", {})
-    if challonge_id and participant_map:
-        winner_ch_pid = participant_map.get(winner_discord.get("team_id"))
-        loser_ch_pid = participant_map.get(loser_discord.get("team_id"))
+    # Track series score and report to Challonge when series is decided
+    active_match = next(
+        (m for m in active_matches.values()
+         if m.get("challonge_match_id")
+         and {m["teams"][0]["name"].lower(), m["teams"][1]["name"].lower()}
+         == {winner_discord["team_name"].lower(), loser_discord["team_name"].lower()}),
+        None,
+    )
 
-        # Find the active match for these two teams
-        active_match = next(
-            (m for m in active_matches.values()
-             if m.get("challonge_match_id") and m.get("challonge_id") == challonge_id
-             and {m["teams"][0]["name"].lower(), m["teams"][1]["name"].lower()}
-             == {winner_discord["team_name"].lower(), loser_discord["team_name"].lower()}),
-            None,
-        )
-        ch_match_id = active_match["challonge_match_id"] if active_match else None
+    if active_match:
+        series = active_match.get("series_score", {})
+        winner_key = winner_discord["team_name"].lower()
+        loser_key = loser_discord["team_name"].lower()
+        series[winner_key] = series.get(winner_key, 0) + 1
+        series[loser_key] = series.get(loser_key, 0)
+        active_match["series_score"] = series
 
-        if ch_match_id and winner_ch_pid:
-            try:
-                # Challonge scores_csv: player1's score first
-                # Need to figure out which is player1 vs player2 in the Challonge match
-                open_matches = await challonge_get_matches(challonge_id, state="all")
-                ch_match = next((m for m in open_matches if m["id"] == ch_match_id), None)
-                if ch_match:
-                    if ch_match["player1_id"] == winner_ch_pid:
-                        csv = f"{winner_score}-{loser_score}"
-                    else:
-                        csv = f"{loser_score}-{winner_score}"
-                    await challonge_update_match(challonge_id, ch_match_id, csv, winner_ch_pid)
-                    print(f"[Challonge] Reported result for match {ch_match_id}")
-            except Exception as e:
-                print(f"[Challonge] Failed to report result: {e}")
+        fmt = active_match.get("format", "bo1")
+        wins_needed = {"bo1": 1, "bo3": 2, "bo5": 3}.get(fmt, 1)
+        winner_series_wins = series[winner_key]
+        loser_series_wins = series[loser_key]
+
+        print(f"[Series] {winner_discord['team_name']} {winner_series_wins} - {loser_series_wins} {loser_discord['team_name']} ({fmt}, need {wins_needed})")
+
+        # Post series update to match channel
+        for g in bot.guilds:
+            match_ch = g.get_channel(active_match.get("channel_id"))
+            if match_ch:
+                if winner_series_wins >= wins_needed:
+                    await match_ch.send(
+                        f"**{winner_discord['team_name']}** wins the series **{winner_series_wins}-{loser_series_wins}**! 🎉"
+                    )
+                else:
+                    await match_ch.send(
+                        f"**{winner_discord['team_name']}** wins this map! "
+                        f"Series: **{winner_series_wins}-{loser_series_wins}**"
+                    )
+                break
+
+        # Only report to Challonge when the series is decided
+        if winner_series_wins >= wins_needed:
+            challonge_id = active_match.get("challonge_id")
+            ch_match_id = active_match.get("challonge_match_id")
+            participant_map = active_match.get("challonge_participant_map", {})
+            winner_ch_pid = participant_map.get(winner_discord.get("team_id"))
+
+            if challonge_id and ch_match_id and winner_ch_pid:
+                try:
+                    open_matches = await challonge_get_matches(challonge_id, state="all")
+                    ch_match = next((m for m in open_matches if m["id"] == ch_match_id), None)
+                    if ch_match:
+                        # scores_csv: player1's score first
+                        if ch_match["player1_id"] == winner_ch_pid:
+                            csv = f"{winner_series_wins}-{loser_series_wins}"
+                        else:
+                            csv = f"{loser_series_wins}-{winner_series_wins}"
+                        await challonge_update_match(challonge_id, ch_match_id, csv, winner_ch_pid)
+                        print(f"[Challonge] Series decided — reported {csv} for match {ch_match_id}")
+                except Exception as e:
+                    print(f"[Challonge] Failed to report result: {e}")
+
+            # Clean up the active match
+            match_id = active_match.get("match_id")
+            if match_id and match_id in active_matches:
+                del active_matches[match_id]
 
     return web.Response(status=200, text="ok")
 
@@ -1160,10 +1199,402 @@ async def handle_launch(request: web.Request) -> web.Response:
     return web.Response(content_type="text/html", text=html)
 
 
+# ── Admin bracket page ────────────────────────────────────────────────────────
+async def handle_admin_bracket(request: web.Request) -> web.Response:
+    t_id = request.match_info["tournament_id"].upper()
+    token = request.query.get("token", "")
+
+    t = tournaments.get(t_id)
+    if not t or t.get("admin_token") != token:
+        return web.Response(status=403, text="Invalid tournament or token.")
+
+    html = BRACKET_HTML.replace("{{TOURNAMENT_ID}}", t_id).replace("{{TOKEN}}", token)
+    return web.Response(content_type="text/html", text=html)
+
+
+async def handle_api_tournament(request: web.Request) -> web.Response:
+    t_id = request.match_info["tournament_id"].upper()
+    token = request.query.get("token", "")
+
+    t = tournaments.get(t_id)
+    if not t or t.get("admin_token") != token:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    challonge_id = t.get("challonge_id")
+    if not challonge_id:
+        return web.json_response({"error": "no bracket"}, status=404)
+
+    try:
+        matches = await challonge_get_matches(challonge_id, state="all")
+        participants = await challonge_get_participants(challonge_id)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+    p_map = {p["id"]: p["name"] for p in participants}
+
+    # Check which matches are already started in Discord
+    started_ch_ids = {m.get("challonge_match_id") for m in active_matches.values() if m.get("challonge_match_id")}
+
+    match_list = []
+    for m in matches:
+        match_list.append({
+            "id": m["id"],
+            "round": m.get("round", 0),
+            "identifier": m.get("identifier", ""),
+            "state": m["state"],
+            "player1": p_map.get(m.get("player1_id"), None),
+            "player2": p_map.get(m.get("player2_id"), None),
+            "player1_id": m.get("player1_id"),
+            "player2_id": m.get("player2_id"),
+            "scores_csv": m.get("scores_csv", ""),
+            "winner_id": m.get("winner_id"),
+            "started_in_discord": m["id"] in started_ch_ids,
+        })
+
+    return web.json_response({
+        "name": t["name"],
+        "challonge_url": t.get("challonge_url", ""),
+        "matches": match_list,
+    })
+
+
+async def handle_api_start_match(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+
+    t_id = body.get("tournament_id", "").upper()
+    token = body.get("token", "")
+    ch_match_id = body.get("challonge_match_id")
+    fmt = body.get("format", "bo1")
+
+    t = tournaments.get(t_id)
+    if not t or t.get("admin_token") != token:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    if fmt not in ("bo1", "bo3", "bo5"):
+        return web.json_response({"error": "invalid format"}, status=400)
+
+    # Get match info from Challonge
+    challonge_id = t.get("challonge_id")
+    if not challonge_id:
+        return web.json_response({"error": "no bracket"}, status=404)
+
+    try:
+        matches = await challonge_get_matches(challonge_id, state="open")
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+    ch_match = next((m for m in matches if m["id"] == ch_match_id), None)
+    if not ch_match:
+        return web.json_response({"error": "match not found or not open"}, status=404)
+
+    # Resolve participants to local team dicts
+    participant_map = t.get("challonge_participant_map", {})
+    ch_to_local = {}
+    for team_id, ch_pid in participant_map.items():
+        team_dict = next((tm for tm in t["teams"] if tm["team_id"] == team_id), None)
+        if team_dict:
+            ch_to_local[ch_pid] = team_dict
+
+    t1_dict = ch_to_local.get(ch_match.get("player1_id"))
+    t2_dict = ch_to_local.get(ch_match.get("player2_id"))
+    if not t1_dict or not t2_dict:
+        return web.json_response({"error": "could not resolve teams"}, status=404)
+
+    guild = bot.guilds[0] if bot.guilds else None
+    if not guild:
+        return web.json_response({"error": "bot not in any guild"}, status=500)
+
+    try:
+        ch = await create_match(guild, t1_dict, t2_dict, t, fmt, challonge_match_id=ch_match_id)
+        return web.json_response({"ok": True, "channel": ch.name})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+BRACKET_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tournament Admin</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; padding: 20px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  .subtitle { color: #888; margin-bottom: 20px; font-size: 0.9rem; }
+  .subtitle a { color: #f09030; }
+  .bracket-container { display: flex; gap: 0; overflow-x: auto; padding: 20px 0; }
+  .round-column { display: flex; flex-direction: column; justify-content: center; min-width: 240px; gap: 8px; position: relative; }
+  .round-header { text-align: center; font-size: 0.75rem; color: #f09030; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 1px; }
+  .match-card {
+    background: #16213e; border: 1px solid #2a2a4a; border-radius: 6px;
+    padding: 0; cursor: default; transition: all 0.15s; position: relative;
+    overflow: hidden;
+  }
+  .match-card.open { border-color: #f09030; cursor: pointer; }
+  .match-card.open:hover { background: #1a2a50; box-shadow: 0 0 12px rgba(240,144,48,0.3); }
+  .match-card.started { border-color: #4CAF50; }
+  .match-card.complete { opacity: 0.6; }
+  .match-id { position: absolute; top: 4px; right: 6px; font-size: 0.65rem; color: #555; }
+  .team-row {
+    display: flex; align-items: center; padding: 6px 10px;
+    border-bottom: 1px solid #2a2a4a; font-size: 0.85rem;
+  }
+  .team-row:last-child { border-bottom: none; }
+  .team-seed { color: #666; font-size: 0.7rem; width: 22px; text-align: right; margin-right: 8px; }
+  .team-name { flex: 1; }
+  .team-name.winner { color: #f09030; font-weight: 700; }
+  .team-name.tbd { color: #555; font-style: italic; }
+  .team-score { font-weight: 700; min-width: 20px; text-align: center; padding: 2px 6px; border-radius: 3px; font-size: 0.8rem; }
+  .team-score.win { background: #f09030; color: #000; }
+  .match-status {
+    font-size: 0.65rem; text-align: center; padding: 2px; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .match-status.live { background: #4CAF50; color: #fff; }
+  .match-status.open-status { background: #f09030; color: #000; }
+  .section-label { font-size: 1.1rem; font-weight: 700; margin: 24px 0 8px; color: #f09030; }
+  /* Format picker modal */
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: #16213e; border: 1px solid #f09030; border-radius: 10px;
+    padding: 24px; min-width: 320px; text-align: center;
+  }
+  .modal h2 { font-size: 1.1rem; margin-bottom: 4px; }
+  .modal .match-label { color: #888; font-size: 0.85rem; margin-bottom: 16px; }
+  .modal .fmt-buttons { display: flex; gap: 10px; justify-content: center; margin-bottom: 16px; }
+  .modal .fmt-btn {
+    padding: 10px 24px; border-radius: 6px; border: 2px solid #2a2a4a;
+    background: #1a1a2e; color: #eee; font-size: 1rem; cursor: pointer; transition: all 0.15s;
+  }
+  .modal .fmt-btn:hover { border-color: #f09030; background: #1a2a50; }
+  .modal .fmt-btn.selected { border-color: #f09030; background: #f09030; color: #000; font-weight: 700; }
+  .modal .start-btn {
+    padding: 10px 32px; border-radius: 6px; border: none;
+    background: #4CAF50; color: #fff; font-size: 1rem; font-weight: 700;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .modal .start-btn:hover { background: #45a049; }
+  .modal .start-btn:disabled { background: #333; cursor: not-allowed; }
+  .modal .cancel-btn {
+    padding: 8px 20px; border-radius: 6px; border: 1px solid #555;
+    background: transparent; color: #888; font-size: 0.85rem;
+    cursor: pointer; margin-top: 10px;
+  }
+  .loading { color: #f09030; text-align: center; padding: 40px; }
+  .connector { position: absolute; right: -16px; width: 16px; border: 1px solid #2a2a4a; border-left: none; }
+</style>
+</head>
+<body>
+<h1 id="title">Loading...</h1>
+<p class="subtitle" id="subtitle"></p>
+
+<div class="section-label">Winners Bracket</div>
+<div class="bracket-container" id="winners-bracket"></div>
+
+<div class="section-label">Losers Bracket</div>
+<div class="bracket-container" id="losers-bracket"></div>
+
+<div class="section-label">Grand Finals</div>
+<div class="bracket-container" id="grand-finals"></div>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h2>Start Match</h2>
+    <p class="match-label" id="modal-match-label"></p>
+    <div class="fmt-buttons">
+      <button class="fmt-btn" data-fmt="bo1">BO1</button>
+      <button class="fmt-btn" data-fmt="bo3">BO3</button>
+      <button class="fmt-btn" data-fmt="bo5">BO5</button>
+    </div>
+    <button class="start-btn" id="modal-start" disabled>Start Match</button><br>
+    <button class="cancel-btn" id="modal-cancel">Cancel</button>
+  </div>
+</div>
+
+<script>
+const T_ID = "{{TOURNAMENT_ID}}";
+const TOKEN = "{{TOKEN}}";
+let selectedFmt = null;
+let selectedMatchId = null;
+
+async function loadBracket() {
+  const resp = await fetch(`/api/tournament/${T_ID}?token=${TOKEN}`);
+  if (!resp.ok) { document.getElementById("title").textContent = "Error loading bracket"; return; }
+  const data = await resp.json();
+
+  document.getElementById("title").textContent = data.name;
+  document.getElementById("subtitle").innerHTML = `<a href="${data.challonge_url}" target="_blank">View on Challonge ↗</a>`;
+
+  // Group matches by round
+  const winners = {}, losers = {}, gf = [];
+  for (const m of data.matches) {
+    if (m.round > 0) {
+      if (!winners[m.round]) winners[m.round] = [];
+      winners[m.round].push(m);
+    } else if (m.round < 0) {
+      if (!losers[m.round]) losers[m.round] = [];
+      losers[m.round].push(m);
+    } else {
+      gf.push(m);
+    }
+  }
+
+  // Detect grand finals (highest positive round with only 1-2 matches)
+  const wRounds = Object.keys(winners).map(Number).sort((a,b) => a-b);
+  const maxWRound = wRounds[wRounds.length - 1];
+  if (winners[maxWRound] && winners[maxWRound].length <= 2) {
+    gf.push(...winners[maxWRound]);
+    delete winners[maxWRound];
+  }
+
+  renderBracket(document.getElementById("winners-bracket"), winners, false);
+  renderBracket(document.getElementById("losers-bracket"), losers, true);
+  renderRound(document.getElementById("grand-finals"), gf, "Grand Finals");
+}
+
+function renderBracket(container, roundsObj, isLosers) {
+  container.innerHTML = "";
+  const rounds = Object.keys(roundsObj).map(Number).sort((a,b) => isLosers ? b-a : a-b);
+  for (const r of rounds) {
+    const col = document.createElement("div");
+    col.className = "round-column";
+    const hdr = document.createElement("div");
+    hdr.className = "round-header";
+    hdr.textContent = isLosers ? `Losers R${Math.abs(r)}` : `Winners R${r}`;
+    col.appendChild(hdr);
+    for (const m of roundsObj[r]) {
+      col.appendChild(makeMatchCard(m));
+    }
+    container.appendChild(col);
+  }
+}
+
+function renderRound(container, matches, label) {
+  container.innerHTML = "";
+  if (!matches.length) { container.style.display = "none"; return; }
+  const col = document.createElement("div");
+  col.className = "round-column";
+  const hdr = document.createElement("div");
+  hdr.className = "round-header";
+  hdr.textContent = label;
+  col.appendChild(hdr);
+  for (const m of matches) col.appendChild(makeMatchCard(m));
+  container.appendChild(col);
+}
+
+function makeMatchCard(m) {
+  const card = document.createElement("div");
+  card.className = "match-card";
+  if (m.state === "open" && !m.started_in_discord) card.className += " open";
+  else if (m.started_in_discord) card.className += " started";
+  else if (m.state === "complete") card.className += " complete";
+
+  const idSpan = `<span class="match-id">${m.identifier}</span>`;
+  const scores = m.scores_csv ? m.scores_csv.split("-") : ["", ""];
+  const p1Won = m.winner_id && m.winner_id === m.player1_id;
+  const p2Won = m.winner_id && m.winner_id === m.player2_id;
+
+  let statusHtml = "";
+  if (m.started_in_discord) statusHtml = `<div class="match-status live">LIVE</div>`;
+  else if (m.state === "open") statusHtml = `<div class="match-status open-status">READY</div>`;
+
+  card.innerHTML = `
+    ${idSpan}
+    <div class="team-row">
+      <span class="team-name ${m.player1 ? (p1Won ? 'winner' : '') : 'tbd'}">${m.player1 || 'TBD'}</span>
+      <span class="team-score ${p1Won ? 'win' : ''}">${scores[0] || ''}</span>
+    </div>
+    <div class="team-row">
+      <span class="team-name ${m.player2 ? (p2Won ? 'winner' : '') : 'tbd'}">${m.player2 || 'TBD'}</span>
+      <span class="team-score ${p2Won ? 'win' : ''}">${scores[1] || ''}</span>
+    </div>
+    ${statusHtml}
+  `;
+
+  if (m.state === "open" && !m.started_in_discord) {
+    card.addEventListener("click", () => openModal(m));
+  }
+  return card;
+}
+
+function openModal(m) {
+  selectedMatchId = m.id;
+  selectedFmt = null;
+  document.getElementById("modal-match-label").textContent = `${m.player1} vs ${m.player2}`;
+  document.getElementById("modal-start").disabled = true;
+  document.querySelectorAll(".fmt-btn").forEach(b => b.classList.remove("selected"));
+  document.getElementById("modal").classList.add("active");
+}
+
+document.querySelectorAll(".fmt-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    selectedFmt = btn.dataset.fmt;
+    document.querySelectorAll(".fmt-btn").forEach(b => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    document.getElementById("modal-start").disabled = false;
+  });
+});
+
+document.getElementById("modal-cancel").addEventListener("click", () => {
+  document.getElementById("modal").classList.remove("active");
+});
+
+document.getElementById("modal-start").addEventListener("click", async () => {
+  if (!selectedMatchId || !selectedFmt) return;
+  const btn = document.getElementById("modal-start");
+  btn.disabled = true;
+  btn.textContent = "Starting...";
+  try {
+    const resp = await fetch("/api/start-match", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        tournament_id: T_ID,
+        token: TOKEN,
+        challonge_match_id: selectedMatchId,
+        format: selectedFmt,
+      }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      document.getElementById("modal").classList.remove("active");
+      btn.textContent = "Start Match";
+      loadBracket();
+    } else {
+      alert("Error: " + (data.error || "Unknown error"));
+      btn.textContent = "Start Match";
+      btn.disabled = false;
+    }
+  } catch(e) {
+    alert("Error: " + e.message);
+    btn.textContent = "Start Match";
+    btn.disabled = false;
+  }
+});
+
+// Auto-refresh every 30s
+loadBracket();
+setInterval(loadBracket, 30000);
+</script>
+</body>
+</html>"""
+
+
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/krunker", handle_krunker_webhook)
     app.router.add_get("/launch", handle_launch)
+    app.router.add_get("/admin/{tournament_id}", handle_admin_bracket)
+    app.router.add_get("/api/tournament/{tournament_id}", handle_api_tournament)
+    app.router.add_post("/api/start-match", handle_api_start_match)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
@@ -1367,8 +1798,8 @@ class MapActionButton(discord.ui.Button):
             await interaction.channel.send(embed=summary)
 
             # Randomly assign a captain to host
-            host_team_idx = random.randint(0, 1)
-            host_captain_id = match["teams"][host_team_idx]["captain_id"]
+            # Higher seed (team index 0) always hosts
+            host_captain_id = match["teams"][0]["captain_id"]
             match["host_captain_id"] = host_captain_id
             match["current_map_index"] = 0
             match["all_maps"] = all_maps
@@ -1506,6 +1937,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
         "challonge_match_id": challonge_match_id,
         "challonge_id": found_tournament.get("challonge_id"),
         "challonge_participant_map": found_tournament.get("challonge_participant_map", {}),
+        "series_score": {},  # {team_name_lower: maps_won}
     }
     active_matches[match_id] = match
 
@@ -1523,140 +1955,32 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     return channel
 
 
-# ── /round-setup command ──────────────────────────────────────────────────────
-class MatchStartButton(discord.ui.Button):
-    """Button representing a single open Challonge match — click to create the pick/ban channel."""
-    def __init__(self, match_data: dict, team1_name: str, team2_name: str,
-                 team1_dict: dict, team2_dict: dict, tournament: dict, fmt: str, row: int):
-        label = f"{match_data['identifier']}  {team1_name} vs {team2_name}"[:80]
-        super().__init__(
-            label=label,
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"mstart_{match_data['id']}",
-            row=row,
-        )
-        self.match_data = match_data
-        self.team1_name = team1_name
-        self.team2_name = team2_name
-        self.team1_dict = team1_dict
-        self.team2_dict = team2_dict
-        self.tournament = tournament
-        self.fmt = fmt
-
-    async def callback(self, interaction: discord.Interaction):
-        # Disable this button immediately
-        self.disabled = True
-        self.style = discord.ButtonStyle.success
-        self.label = f"✓ {self.label}"
-        await interaction.response.edit_message(view=self.view)
-
-        ch = await create_match(
-            interaction.guild, self.team1_dict, self.team2_dict, self.tournament, self.fmt,
-            challonge_match_id=self.match_data["id"],
-        )
-        await interaction.followup.send(f"Match started: {ch.mention}", ephemeral=True)
-
-
-class RoundSetupView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=600)
-
-
+# ── /bracket command ──────────────────────────────────────────────────────────
 @bot.tree.command(
-    name="round-setup",
-    description="Show open matches from the bracket — click to start a match.",
+    name="bracket",
+    description="Get the admin bracket panel link to start matches.",
     guild=discord.Object(id=SERVER_ID),
 )
-@app_commands.describe(
-    tournament_id="The tournament ID",
-    format="Match format for this round",
-)
-@app_commands.choices(format=[
-    app_commands.Choice(name="BO1", value="bo1"),
-    app_commands.Choice(name="BO3", value="bo3"),
-    app_commands.Choice(name="BO5", value="bo5"),
-])
-async def round_setup(interaction: discord.Interaction, tournament_id: str, format: str):
+@app_commands.describe(tournament_id="The tournament ID")
+async def bracket_cmd(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
     if t_id not in tournaments:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
     t = tournaments[t_id]
-    if t.get("open"):
-        await interaction.response.send_message("Tournament signups are still open. Start it first.", ephemeral=True)
+    token = t.get("admin_token")
+    if not token:
+        await interaction.response.send_message("No admin panel available for this tournament.", ephemeral=True)
         return
 
-    challonge_id = t.get("challonge_id")
-    if not challonge_id:
-        await interaction.response.send_message("No Challonge bracket linked to this tournament.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
-    matches = await challonge_get_matches(challonge_id, state="open")
-    if not matches:
-        await interaction.followup.send("No open matches right now.", ephemeral=True)
-        return
-
-    participants = await challonge_get_participants(challonge_id)
-    p_map = {p["id"]: p["name"] for p in participants}
-
-    # Reverse map: challonge participant_id -> local team dict
-    ch_to_local = {}
-    participant_map = t.get("challonge_participant_map", {})
-    for team_id, ch_pid in participant_map.items():
-        team_dict = next((tm for tm in t["teams"] if tm["team_id"] == team_id), None)
-        if team_dict:
-            ch_to_local[ch_pid] = team_dict
-
-    view = RoundSetupView()
-    embed_lines = []
-    added = 0
-
-    for m in matches:
-        if added >= 20:  # Discord button limit safety
-            break
-        p1_id = m.get("player1_id")
-        p2_id = m.get("player2_id")
-        if not p1_id or not p2_id:
-            continue
-
-        t1_name = p_map.get(p1_id, "???")
-        t2_name = p_map.get(p2_id, "???")
-        t1_dict = ch_to_local.get(p1_id)
-        t2_dict = ch_to_local.get(p2_id)
-        if not t1_dict or not t2_dict:
-            continue
-
-        row = added // 5
-        if row > 3:
-            break  # Max 4 rows for match buttons (row 4 reserved)
-
-        round_num = m.get("round", 0)
-        bracket = "W" if round_num > 0 else "L"
-        round_label = f"{bracket}R{abs(round_num)}"
-        embed_lines.append(f"`{m['identifier']}` **{t1_name}** vs **{t2_name}** — {round_label}")
-
-        view.add_item(MatchStartButton(
-            match_data=m,
-            team1_name=t1_name,
-            team2_name=t2_name,
-            team1_dict=t1_dict,
-            team2_dict=t2_dict,
-            tournament=t,
-            fmt=format,
-            row=row,
-        ))
-        added += 1
-
-    embed = discord.Embed(
-        title=f"Open Matches — {format.upper()}",
-        description="\n".join(embed_lines) if embed_lines else "No matches available.",
-        color=0x2B2D31,
+    admin_url = f"{RAILWAY_BASE}/admin/{t_id}?token={token}"
+    await interaction.response.send_message(
+        f"**Admin Bracket Panel:** {admin_url}\n"
+        f"**Challonge:** {t.get('challonge_url', 'N/A')}\n\n"
+        f"Click matches on the admin panel to start them.",
+        ephemeral=True,
     )
-    embed.set_footer(text=f"Bracket: {t.get('challonge_url', 'N/A')}")
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 # ── Run ────────────────────────────────────────────────────────────────────────
