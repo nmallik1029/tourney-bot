@@ -2000,6 +2000,7 @@ class HostMapButton(discord.ui.Button):
             "team1Name": team1,
             "team2Name": team2,
             "teamSize": team_size,
+            "region": "ny",
             "webhook": WEBHOOK_URL,
         }
         query = urllib.parse.urlencode(params)
