@@ -59,29 +59,36 @@ async def challonge_request(method: str, path: str, **kwargs) -> dict | list:
     params["api_key"] = CHALLONGE_API_KEY
     async with aiohttp.ClientSession() as session:
         async with session.request(method, url, params=params, **kwargs) as resp:
-            data = await resp.json()
+            text = await resp.text()
             if resp.status >= 400:
-                print(f"[Challonge] {method} {path} → {resp.status}: {data}")
-            return data
+                print(f"[Challonge] {method} {path} → {resp.status}: {text[:500]}")
+                raise Exception(f"{resp.status}, {text[:200]}")
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                raise Exception(f"Non-JSON response: {text[:200]}")
 
 
 async def challonge_create_tournament(name: str, url_slug: str) -> dict:
-    data = await challonge_request("POST", "/tournaments.json", json={
-        "tournament": {
-            "name": name,
-            "url": url_slug,
-            "tournament_type": "double elimination",
-            "private": False,
-        }
+    data = await challonge_request("POST", "/tournaments.json", data={
+        "tournament[name]": name,
+        "tournament[url]": url_slug,
+        "tournament[tournament_type]": "double elimination",
+        "tournament[private]": "false",
+        "tournament[game_name]": "Krunker",
     })
     return data.get("tournament", data)
 
 
 async def challonge_add_participants(challonge_id, teams_with_seeds: list[dict]) -> list:
     """teams_with_seeds: [{"name": "...", "seed": 1, "misc": "team_id"}, ...]"""
-    data = await challonge_request("POST", f"/tournaments/{challonge_id}/participants/bulk_add.json", json={
-        "participants": teams_with_seeds,
-    })
+    form = {}
+    for i, t in enumerate(teams_with_seeds):
+        form[f"participants[{i}][name]"] = t["name"]
+        form[f"participants[{i}][seed]"] = str(t["seed"])
+        if t.get("misc"):
+            form[f"participants[{i}][misc]"] = t["misc"]
+    data = await challonge_request("POST", f"/tournaments/{challonge_id}/participants/bulk_add.json", data=form)
     return data
 
 
@@ -105,11 +112,9 @@ async def challonge_get_participants(challonge_id) -> list:
 
 
 async def challonge_update_match(challonge_id, match_id, scores_csv: str, winner_id: int) -> dict:
-    data = await challonge_request("PUT", f"/tournaments/{challonge_id}/matches/{match_id}.json", json={
-        "match": {
-            "scores_csv": scores_csv,
-            "winner_id": winner_id,
-        }
+    data = await challonge_request("PUT", f"/tournaments/{challonge_id}/matches/{match_id}.json", data={
+        "match[scores_csv]": scores_csv,
+        "match[winner_id]": str(winner_id),
     })
     return data.get("match", data)
 
