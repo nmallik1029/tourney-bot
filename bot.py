@@ -88,8 +88,8 @@ def save_config(data: dict):
 
 tournaments: dict[str, dict] = load_tournaments()
 
-ROLE_ID = 1492371308774948894  # Role required for bot commands and staff channel access
-SERVER_ID = 1489359260348579840
+ROLE_ID = 1492368556627591248  # Role required for bot commands and staff channel access
+SERVER_ID = 1481881771736956938
 
 
 # ── Global command permission check ──────────────────────────────────────────
