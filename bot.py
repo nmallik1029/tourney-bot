@@ -91,6 +91,20 @@ tournaments: dict[str, dict] = load_tournaments()
 ROLE_ID = 1492371308774948894  # Role required for bot commands and staff channel access
 SERVER_ID = 1489359260348579840
 
+
+# ── Global command permission check ──────────────────────────────────────────
+def is_authorized():
+    """Check that user has ROLE_ID or is an administrator."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        if any(r.id == ROLE_ID for r in interaction.user.roles):
+            return True
+        await interaction.response.send_message("You don't have permission to use bot commands.", ephemeral=True)
+        return False
+    return app_commands.check(predicate)
+
+
 # ── Challonge API ─────────────────────────────────────────────────────────────
 CHALLONGE_API_KEY = os.environ.get("CHALLONGE_API_KEY", "")
 CHALLONGE_BASE = "https://api.challonge.com/v1"
@@ -745,8 +759,8 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
         return
 
     t = tournaments[t_id]
-    if interaction.user.id != t["organizer_id"]:
-        await interaction.response.send_message("Only the tournament organizer can start this tournament.", ephemeral=True)
+    if interaction.user.id != t["organizer_id"] and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Only the organizer or an admin can start this tournament.", ephemeral=True)
         return
 
     if not t["open"]:
@@ -942,8 +956,8 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
         return
 
     t = tournaments[t_id]
-    if interaction.user.id != t["organizer_id"]:
-        await interaction.response.send_message("Only the tournament organizer can delete this tournament.", ephemeral=True)
+    if interaction.user.id != t["organizer_id"] and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Only the organizer or an admin can delete this tournament.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -1005,18 +1019,6 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
     save_tournaments()
     await interaction.followup.send(f"Tournament `{t_id}` has been deleted.")
 
-
-# ── Global command permission check ──────────────────────────────────────────
-def is_authorized():
-    """Check that user has ROLE_ID or is an administrator."""
-    async def predicate(interaction: discord.Interaction) -> bool:
-        if interaction.user.guild_permissions.administrator:
-            return True
-        if any(r.id == ROLE_ID for r in interaction.user.roles):
-            return True
-        await interaction.response.send_message("You don't have permission to use bot commands.", ephemeral=True)
-        return False
-    return app_commands.check(predicate)
 
 
 # ── Error handler ─────────────────────────────────────────────────────────────
