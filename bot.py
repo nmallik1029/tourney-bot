@@ -825,18 +825,14 @@ async def tournament_create(interaction: discord.Interaction):
 
 
 # ── /tournament-info ──────────────────────────────────────────────────────────
+_dashboard_tokens: set[str] = set()
+
 @bot.tree.command(name="tournament-info", description="Open the tournament dashboard.", guild=discord.Object(id=SERVER_ID))
 async def tournament_info(interaction: discord.Interaction):
-    # Use a global dashboard token or generate one
     dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
     if not dashboard_token:
-        # Fall back to first tournament's admin token, or generate a temporary one
-        for t in tournaments.values():
-            if t.get("admin_token"):
-                dashboard_token = t["admin_token"]
-                break
-    if not dashboard_token:
         dashboard_token = str(uuid.uuid4())
+        _dashboard_tokens.add(dashboard_token)
 
     url = f"{RAILWAY_BASE}/dashboard?token={dashboard_token}"
     await interaction.response.send_message(f"**Tournament Dashboard:**\n{url}", ephemeral=True)
@@ -2360,14 +2356,20 @@ loadDashboard();
 </html>"""
 
 
+def _valid_dashboard_token(token: str) -> bool:
+    if not token:
+        return False
+    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
+    if dashboard_token and token == dashboard_token:
+        return True
+    if token in _dashboard_tokens:
+        return True
+    return any(t.get("admin_token") == token for t in tournaments.values())
+
+
 async def handle_dashboard(request: web.Request) -> web.Response:
     token = request.query.get("token", "")
-    # Validate token matches any tournament's admin token or a global dashboard token
-    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
-    valid = (dashboard_token and token == dashboard_token) or any(
-        t.get("admin_token") == token for t in tournaments.values()
-    )
-    if not valid:
+    if not _valid_dashboard_token(token):
         return web.Response(status=403, text="Invalid token.")
     html = DASHBOARD_HTML.replace("{{TOKEN}}", token)
     return web.Response(content_type="text/html", text=html)
@@ -2375,11 +2377,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
 
 async def handle_api_dashboard(request: web.Request) -> web.Response:
     token = request.query.get("token", "")
-    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
-    valid = (dashboard_token and token == dashboard_token) or any(
-        t.get("admin_token") == token for t in tournaments.values()
-    )
-    if not valid:
+    if not _valid_dashboard_token(token):
         return web.json_response({"error": "forbidden"}, status=403)
 
     result = []
