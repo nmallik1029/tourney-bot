@@ -808,7 +808,7 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
                 except Exception:
                     pass
 
-    # Delete per-team channels and roles
+    # Delete per-team channels, categories, and roles
     for team_id, ch_ids in t.get("team_channels", {}).items():
         for ch_id in [ch_ids.get("text"), ch_ids.get("voice")]:
             if ch_id:
@@ -818,6 +818,13 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
                         await ch.delete()
                     except Exception:
                         pass
+    for team_id, cat_id in t.get("team_categories", {}).items():
+        cat = guild.get_channel(cat_id)
+        if cat:
+            try:
+                await cat.delete()
+            except Exception:
+                pass
     for team_id, role_id in t.get("team_roles", {}).items():
         role = guild.get_role(role_id)
         if role:
@@ -1868,27 +1875,30 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
     except Exception as e:
         return web.json_response({"error": f"channel creation failed: {e}"}, status=500)
 
-    # Create per-team roles and channels (text + vc)
+    # Create per-team roles, categories, and channels (text + vc)
     t["team_roles"] = {}
     t["team_channels"] = {}
+    t["team_categories"] = {}
     for tm in seeded_teams:
         team_name = tm["team_name"]
-        safe_name = re.sub(r"[^a-z0-9\-]", "-", team_name.lower()).strip("-")[:90]
         try:
             role = await guild.create_role(name=team_name, mentionable=True)
             tm["role_id"] = role.id
             t["team_roles"][tm["team_id"]] = role.id
 
-            # Assign role to team members
-            for pid in tm.get("player_ids", []):
-                member = guild.get_member(pid)
-                if member:
-                    try:
-                        await member.add_roles(role)
-                    except Exception:
-                        pass
+            # Assign role to team members using players list
+            for player in tm.get("players", []):
+                pid = player.get("discord_id")
+                if pid:
+                    member = guild.get_member(pid)
+                    if member:
+                        try:
+                            await member.add_roles(role)
+                            print(f"[Teams] Assigned role '{team_name}' to {member.display_name}")
+                        except Exception as e:
+                            print(f"[Teams] Failed to assign role to {pid}: {e}")
 
-            # Channel perms: only this team + staff + bot can see
+            # Category + channel perms: only this team + staff + bot can see
             team_perms = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True),
@@ -1897,10 +1907,13 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
             if staff_role:
                 team_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, connect=True, speak=True)
 
-            text_ch = await guild.create_text_channel(name=safe_name, overwrites=team_perms, category=t_cat)
-            voice_ch = await guild.create_voice_channel(name=safe_name, overwrites=team_perms, category=t_cat)
+            team_category = await guild.create_category(name=team_name, overwrites=team_perms)
+            t["team_categories"][tm["team_id"]] = team_category.id
+
+            text_ch = await guild.create_text_channel(name=team_name, category=team_category)
+            voice_ch = await guild.create_voice_channel(name=team_name, category=team_category)
             t["team_channels"][tm["team_id"]] = {"text": text_ch.id, "voice": voice_ch.id}
-            print(f"[Teams] Created role + channels for {team_name}")
+            print(f"[Teams] Created role + category + channels for {team_name}")
         except Exception as e:
             print(f"[Teams] Error creating role/channels for {team_name}: {e}")
     save_tournaments()
