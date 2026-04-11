@@ -839,6 +839,93 @@ async def tournament_info(interaction: discord.Interaction):
 
 
 # ── /tournament-delete ─────────────────────────────────────────────────────────
+# ── /tournament-end ───────────────────────────────────────────────────────────
+@bot.tree.command(name="tournament-end", description="End a tournament — clean up channels/roles but keep results.", guild=discord.Object(id=SERVER_ID))
+@app_commands.describe(tournament_id="The tournament ID to end")
+async def tournament_end(interaction: discord.Interaction, tournament_id: str):
+    t_id = tournament_id.upper()
+    if t_id not in tournaments:
+        await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
+        return
+
+    t = tournaments[t_id]
+    if interaction.user.id != t["organizer_id"] and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Only the organizer or an admin can end this tournament.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    # Delete match room channels and clean up active matches
+    match_ids_to_remove = []
+    for mid, match in active_matches.items():
+        if match.get("tournament_id") == t_id:
+            ch_id = match.get("channel_id")
+            if ch_id:
+                ch = guild.get_channel(ch_id)
+                if ch:
+                    try:
+                        await ch.delete()
+                    except Exception:
+                        pass
+            match_ids_to_remove.append(mid)
+    for mid in match_ids_to_remove:
+        del active_matches[mid]
+
+    # Delete tournament channels (signups, updates, admin)
+    for key in ["signups_channel_id", "updates_channel_id", "admin_channel_id"]:
+        ch_id = t.get(key)
+        if ch_id:
+            ch = guild.get_channel(ch_id)
+            if ch:
+                try:
+                    await ch.delete()
+                except Exception:
+                    pass
+
+    # Delete per-team channels, categories, and roles
+    for team_id, ch_ids in t.get("team_channels", {}).items():
+        for ch_id in [ch_ids.get("text"), ch_ids.get("voice")]:
+            if ch_id:
+                ch = guild.get_channel(ch_id)
+                if ch:
+                    try:
+                        await ch.delete()
+                    except Exception:
+                        pass
+    for team_id, cat_id in t.get("team_categories", {}).items():
+        cat = guild.get_channel(cat_id)
+        if cat:
+            try:
+                await cat.delete()
+            except Exception:
+                pass
+    for team_id, role_id in t.get("team_roles", {}).items():
+        role = guild.get_role(role_id)
+        if role:
+            try:
+                await role.delete()
+            except Exception:
+                pass
+
+    # Mark tournament as ended but keep the data
+    t["open"] = False
+    t["ended"] = True
+    t.pop("signups_channel_id", None)
+    t.pop("updates_channel_id", None)
+    t.pop("admin_channel_id", None)
+    t.pop("team_channels", None)
+    t.pop("team_categories", None)
+    t.pop("team_roles", None)
+    save_tournaments()
+
+    await interaction.followup.send(
+        f"Tournament `{t_id}` has ended. All channels and roles cleaned up.\n"
+        f"Results are preserved — view them on the dashboard or Challonge: {t.get('challonge_url', 'N/A')}"
+    )
+
+
+# ── /tournament-delete ─────────────────────────────────────────────────────────
 @bot.tree.command(name="tournament-delete", description="Delete a tournament and its channels.", guild=discord.Object(id=SERVER_ID))
 @app_commands.describe(tournament_id="The tournament ID to delete")
 async def tournament_delete(interaction: discord.Interaction, tournament_id: str):
@@ -913,8 +1000,14 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
 
 
 # ── Global command permission check ──────────────────────────────────────────
+# Commands that anyone can use (no role required)
+PUBLIC_COMMANDS = set()  # Add command names here if you want some open to all users
+
 @bot.tree.interaction_check
 async def global_interaction_check(interaction: discord.Interaction) -> bool:
+    # Allow public commands
+    if interaction.command and interaction.command.name in PUBLIC_COMMANDS:
+        return True
     if interaction.user.guild_permissions.administrator:
         return True
     if any(r.id == ROLE_ID for r in interaction.user.roles):
