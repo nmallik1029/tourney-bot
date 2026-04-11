@@ -46,7 +46,7 @@ def save_config(data: dict):
 
 tournaments: dict[str, dict] = load_tournaments()
 
-STAFF_ROLE_ID = 1489047073142739035
+ROLE_ID = 1489047073142739035  # Role required for bot commands and staff channel access
 SERVER_ID = 1489359260348579840
 
 # ── Challonge API ─────────────────────────────────────────────────────────────
@@ -853,6 +853,15 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
     del tournaments[t_id]
     save_tournaments()
     await interaction.followup.send(f"Tournament `{t_id}` has been deleted.")
+
+
+# ── Global command permission check ──────────────────────────────────────────
+@bot.tree.interaction_check
+async def global_interaction_check(interaction: discord.Interaction) -> bool:
+    if any(r.id == ROLE_ID for r in interaction.user.roles):
+        return True
+    await interaction.response.send_message("You don't have permission to use bot commands.", ephemeral=True)
+    return False
 
 
 # ── Error handler ─────────────────────────────────────────────────────────────
@@ -1918,7 +1927,7 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
     if not guild:
         return web.json_response({"error": "bot not in guild"}, status=500)
 
-    staff_role = guild.get_role(STAFF_ROLE_ID)
+    staff_role = guild.get_role(ROLE_ID)
     t_cat, a_cat = get_categories(guild)
 
     read_only = {
@@ -2343,7 +2352,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     t2_player_ids = [p["discord_id"] for p in found_t2["players"]]
     all_player_ids = t1_player_ids + t2_player_ids
 
-    staff_role = guild.get_role(STAFF_ROLE_ID)
+    staff_role = guild.get_role(ROLE_ID)
     t_cat, _ = get_categories(guild)
 
     overwrites = {
