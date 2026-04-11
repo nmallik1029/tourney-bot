@@ -876,7 +876,7 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
-    # Delete match room channels and clean up active matches
+    # Delete match room channels from active_matches
     match_ids_to_remove = []
     for mid, match in active_matches.items():
         if match.get("tournament_id") == t_id:
@@ -891,6 +891,19 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
             match_ids_to_remove.append(mid)
     for mid in match_ids_to_remove:
         del active_matches[mid]
+
+    # Also delete any channels in the Matchrooms category (catches channels surviving restarts)
+    matchrooms_cat = discord.utils.get(guild.categories, name="Matchrooms")
+    if matchrooms_cat:
+        for ch in matchrooms_cat.channels:
+            try:
+                await ch.delete()
+            except Exception:
+                pass
+        try:
+            await matchrooms_cat.delete()
+        except Exception:
+            pass
 
     # Delete tournament channels (signups, updates, admin)
     for key in ["signups_channel_id", "updates_channel_id", "admin_channel_id"]:
@@ -1430,20 +1443,51 @@ BRACKET_HTML = """<!DOCTYPE html>
 <title>Tournament Admin</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; min-height: 100vh; }
-  h1 { font-size: 1.5rem; margin-bottom: 4px; }
-  .subtitle { color: #888; margin-bottom: 12px; font-size: 0.9rem; }
-  .subtitle a { color: #f09030; text-decoration: none; }
-  .subtitle a:hover { text-decoration: underline; }
+  body {
+    background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+  }
 
+  /* ── Header ─────────────────────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border-bottom: 1px solid #21262d; padding: 28px 32px;
+  }
+  .header h1 { font-size: 1.6rem; font-weight: 600; }
+  .header-meta { display: flex; gap: 16px; align-items: center; margin-top: 6px; }
+  .header-meta a {
+    color: #f09030; text-decoration: none; font-size: 0.85rem;
+    transition: color 0.2s;
+  }
+  .header-meta a:hover { color: #ffa850; text-decoration: underline; }
+  .header-meta span { color: #484f58; font-size: 0.8rem; }
+  .refresh-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #3fb950; margin-right: 4px; animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 0 32px 32px; }
+
+  /* ── Section labels ─────────────────────────────────────── */
   .section-label {
-    font-size: 1rem; font-weight: 700; color: #f09030; text-transform: uppercase;
-    letter-spacing: 1.5px; margin: 28px 0 4px; padding: 6px 12px;
-    border-left: 3px solid #f09030;
+    font-size: 0.8rem; font-weight: 700; color: #f09030; text-transform: uppercase;
+    letter-spacing: 1.5px; margin: 28px 0 8px; padding: 6px 12px;
+    border-left: 3px solid #f09030; background: rgba(240,144,48,0.04);
+    border-radius: 0 4px 4px 0;
+    animation: fadeSlideIn 0.4s ease;
+  }
+  @keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
   }
 
   /* ── Bracket layout ─────────────────────────────────────── */
-  .bracket-wrapper { overflow-x: auto; padding: 8px 0 16px; }
+  .bracket-wrapper {
+    overflow-x: auto; padding: 8px 0 16px;
+    animation: fadeIn 0.5s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   .bracket {
     display: flex; align-items: stretch; position: relative;
     width: max-content;
@@ -1453,7 +1497,7 @@ BRACKET_HTML = """<!DOCTYPE html>
     min-width: 220px; position: relative; z-index: 1;
   }
   .round-hdr {
-    text-align: center; font-size: 0.7rem; color: #f09030; font-weight: 700;
+    text-align: center; font-size: 0.65rem; color: #8b949e; font-weight: 700;
     text-transform: uppercase; letter-spacing: 1px; padding-bottom: 8px;
   }
   .round-matches { display: flex; flex-direction: column; justify-content: space-around; flex: 1; }
@@ -1461,81 +1505,114 @@ BRACKET_HTML = """<!DOCTYPE html>
   /* Connector column between rounds */
   .connector-col { width: 32px; position: relative; flex-shrink: 0; }
   .connector-col svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-  .connector-col svg line { stroke: #3a3a5a; stroke-width: 1.5; }
+  .connector-col svg line { stroke: #21262d; stroke-width: 1.5; }
 
   /* ── Match card ─────────────────────────────────────────── */
   .match-card {
-    background: #0f1a30; border: 1px solid #2a2a4a; border-radius: 4px;
-    width: 200px; margin: 4px auto; cursor: default; transition: all 0.15s;
-    position: relative; overflow: hidden;
+    background: #161b22; border: 1px solid #21262d; border-radius: 6px;
+    width: 200px; margin: 4px auto; cursor: default;
+    transition: all 0.25s ease; position: relative; overflow: hidden;
   }
-  .match-card.open { border-color: #f09030; cursor: pointer; }
-  .match-card.open:hover { background: #162040; box-shadow: 0 0 10px rgba(240,144,48,0.25); transform: scale(1.02); }
-  .match-card.started { border-color: #4CAF50; }
-  .match-card.complete { opacity: 0.55; }
+  .match-card.open {
+    border-color: #f09030; cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(240,144,48,0.1);
+  }
+  .match-card.open:hover {
+    background: #1c2333; box-shadow: 0 4px 20px rgba(240,144,48,0.15);
+    transform: translateY(-2px);
+  }
+  .match-card.started {
+    border-color: #3fb950;
+    box-shadow: 0 0 0 1px rgba(63,185,80,0.1);
+  }
+  .match-card.complete { opacity: 0.5; }
+  .match-card.complete:hover { opacity: 0.7; }
   .match-id {
-    position: absolute; top: 2px; right: 5px; font-size: 0.6rem; color: #444;
+    position: absolute; top: 2px; right: 6px; font-size: 0.6rem; color: #484f58;
     font-weight: 600;
   }
   .team-row {
-    display: flex; align-items: center; padding: 5px 8px; font-size: 0.8rem;
-    border-bottom: 1px solid #1a2040;
+    display: flex; align-items: center; padding: 6px 10px; font-size: 0.8rem;
+    transition: background 0.2s;
   }
   .team-row:last-of-type { border-bottom: none; }
-  .team-row.top { border-bottom: 1px solid #2a2a4a; }
-  .team-seed { color: #555; font-size: 0.65rem; width: 18px; text-align: right; margin-right: 6px; flex-shrink: 0; }
-  .team-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .team-row.top { border-bottom: 1px solid #21262d; }
+  .team-name {
+    flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color 0.2s;
+  }
   .team-name.winner { color: #f09030; font-weight: 700; }
-  .team-name.loser { color: #555; }
-  .team-name.tbd { color: #444; font-style: italic; }
+  .team-name.loser { color: #484f58; }
+  .team-name.tbd { color: #30363d; font-style: italic; }
   .team-score {
-    font-weight: 700; min-width: 24px; text-align: center; padding: 1px 5px;
-    border-radius: 2px; font-size: 0.75rem; margin-left: 4px;
+    font-weight: 700; min-width: 24px; text-align: center; padding: 2px 6px;
+    border-radius: 3px; font-size: 0.75rem; margin-left: 4px;
+    transition: all 0.2s;
   }
   .team-score.win { background: #f09030; color: #000; }
   .match-status {
-    font-size: 0.6rem; text-align: center; padding: 2px; text-transform: uppercase;
-    letter-spacing: 0.5px; font-weight: 600;
+    font-size: 0.6rem; text-align: center; padding: 3px; text-transform: uppercase;
+    letter-spacing: 0.5px; font-weight: 600; transition: all 0.2s;
   }
-  .match-status.live { background: #4CAF50; color: #fff; }
-  .match-status.open-status { background: rgba(240,144,48,0.15); color: #f09030; }
+  .match-status.live {
+    background: rgba(63,185,80,0.15); color: #3fb950;
+    animation: liveGlow 2s infinite;
+  }
+  @keyframes liveGlow {
+    0%, 100% { background: rgba(63,185,80,0.15); }
+    50% { background: rgba(63,185,80,0.25); }
+  }
+  .match-status.open-status { background: rgba(240,144,48,0.1); color: #f09030; }
 
   /* ── Format picker modal ────────────────────────────────── */
   .modal-overlay {
     display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.75); z-index: 100; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0); z-index: 100; align-items: center; justify-content: center;
+    transition: background 0.3s ease;
   }
-  .modal-overlay.active { display: flex; }
+  .modal-overlay.active { display: flex; background: rgba(0,0,0,0.7); }
   .modal {
-    background: #0f1a30; border: 1px solid #f09030; border-radius: 10px;
-    padding: 24px; min-width: 320px; text-align: center;
+    background: #161b22; border: 1px solid #f09030; border-radius: 12px;
+    padding: 28px; min-width: 340px; text-align: center;
+    transform: scale(0.9); opacity: 0;
+    transition: all 0.3s ease;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
   }
-  .modal h2 { font-size: 1.1rem; margin-bottom: 4px; }
-  .modal .match-label { color: #888; font-size: 0.85rem; margin-bottom: 16px; }
-  .modal .fmt-buttons { display: flex; gap: 10px; justify-content: center; margin-bottom: 16px; }
+  .modal-overlay.active .modal { transform: scale(1); opacity: 1; }
+  .modal h2 { font-size: 1.1rem; margin-bottom: 4px; font-weight: 600; }
+  .modal .match-label { color: #8b949e; font-size: 0.85rem; margin-bottom: 20px; }
+  .modal .fmt-buttons { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
   .modal .fmt-btn {
-    padding: 10px 24px; border-radius: 6px; border: 2px solid #2a2a4a;
-    background: #1a1a2e; color: #eee; font-size: 1rem; cursor: pointer; transition: all 0.15s;
+    padding: 10px 24px; border-radius: 8px; border: 2px solid #21262d;
+    background: #0d1117; color: #e6edf3; font-size: 1rem; cursor: pointer;
+    transition: all 0.25s ease; font-weight: 500;
   }
-  .modal .fmt-btn:hover { border-color: #f09030; background: #1a2a50; }
+  .modal .fmt-btn:hover { border-color: #f09030; background: #161b22; transform: translateY(-1px); }
   .modal .fmt-btn.selected { border-color: #f09030; background: #f09030; color: #000; font-weight: 700; }
   .modal .start-btn {
-    padding: 10px 32px; border-radius: 6px; border: none;
-    background: #4CAF50; color: #fff; font-size: 1rem; font-weight: 700;
-    cursor: pointer; transition: all 0.15s;
+    padding: 10px 36px; border-radius: 8px; border: none;
+    background: #3fb950; color: #fff; font-size: 1rem; font-weight: 700;
+    cursor: pointer; transition: all 0.25s ease;
   }
-  .modal .start-btn:hover { background: #45a049; }
-  .modal .start-btn:disabled { background: #333; cursor: not-allowed; }
+  .modal .start-btn:hover { background: #2ea043; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(63,185,80,0.3); }
+  .modal .start-btn:disabled { background: #21262d; color: #484f58; cursor: not-allowed; transform: none; box-shadow: none; }
   .modal .cancel-btn {
-    padding: 8px 20px; border-radius: 6px; border: 1px solid #555;
-    background: transparent; color: #888; font-size: 0.85rem;
-    cursor: pointer; margin-top: 10px;
+    padding: 8px 20px; border-radius: 6px; border: 1px solid #30363d;
+    background: transparent; color: #8b949e; font-size: 0.85rem;
+    cursor: pointer; margin-top: 12px; transition: all 0.2s ease;
   }
+  .modal .cancel-btn:hover { border-color: #484f58; color: #e6edf3; }
+
+  /* ── Loading state ──────────────────────────────────────── */
+  .loading-text { color: #8b949e; padding: 40px; text-align: center; }
 </style>
 </head>
 <body>
-<h1 id="title">Loading...</h1>
-<p class="subtitle" id="subtitle"></p>
+<div class="header">
+  <h1 id="title">Loading...</h1>
+  <div class="header-meta" id="header-meta"></div>
+</div>
+<div class="container">
 
 <div class="section-label">Winners Bracket</div>
 <div class="bracket-wrapper"><div class="bracket" id="winners-bracket"></div></div>
@@ -1545,6 +1622,8 @@ BRACKET_HTML = """<!DOCTYPE html>
 
 <div class="section-label" id="gf-label">Grand Finals</div>
 <div class="bracket-wrapper"><div class="bracket" id="grand-finals"></div></div>
+
+</div>
 
 <div class="modal-overlay" id="modal">
   <div class="modal">
@@ -1574,7 +1653,9 @@ async function loadBracket() {
   const data = await resp.json();
 
   document.getElementById("title").textContent = data.name;
-  document.getElementById("subtitle").innerHTML = `<a href="${data.challonge_url}" target="_blank">View on Challonge &#8599;</a> &nbsp;|&nbsp; Auto-refreshes every 30s`;
+  document.getElementById("header-meta").innerHTML =
+    '<a href="' + data.challonge_url + '" target="_blank">View on Challonge &#8599;</a>' +
+    '<span><span class="refresh-dot"></span>Live &mdash; refreshes every 30s</span>';
 
   const winners = {}, losers = {}, gf = [];
   for (const m of data.matches) {
@@ -1842,65 +1923,86 @@ SEEDING_HTML = """<!DOCTYPE html>
 <title>Seeding — Tournament Admin</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; min-height: 100vh; }
-  h1 { font-size: 1.5rem; margin-bottom: 4px; }
-  .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9rem; }
+  body {
+    background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+  }
 
-  .seeding-list { max-width: 500px; margin: 0 auto; }
+  .header {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border-bottom: 1px solid #21262d; padding: 28px 32px;
+  }
+  .header h1 { font-size: 1.6rem; font-weight: 600; }
+  .header p { color: #8b949e; font-size: 0.85rem; margin-top: 4px; }
+
+  .container { max-width: 560px; margin: 0 auto; padding: 24px 32px; }
+
+  .seeding-list { display: flex; flex-direction: column; gap: 6px; }
   .seed-item {
     display: flex; align-items: center; gap: 12px;
-    background: #0f1a30; border: 1px solid #2a2a4a; border-radius: 6px;
-    padding: 10px 14px; margin-bottom: 6px; cursor: grab; user-select: none;
-    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    padding: 12px 16px; cursor: grab; user-select: none;
+    transition: all 0.25s ease;
   }
+  .seed-item:hover { border-color: #30363d; background: #1c2333; }
   .seed-item:active { cursor: grabbing; }
-  .seed-item.dragging { opacity: 0.4; transform: scale(0.97); }
-  .seed-item.drag-over { border-color: #f09030; background: #162040; }
+  .seed-item.dragging { opacity: 0.35; transform: scale(0.96); }
+  .seed-item.drag-over { border-color: #f09030; background: #1c2333; box-shadow: 0 0 12px rgba(240,144,48,0.1); }
   .seed-num {
-    font-size: 1.1rem; font-weight: 700; color: #f09030; min-width: 28px;
-    text-align: center;
+    font-size: 1rem; font-weight: 700; color: #f09030; min-width: 28px;
+    text-align: center; background: rgba(240,144,48,0.1); border-radius: 6px;
+    padding: 2px 0;
   }
-  .seed-name { flex: 1; font-size: 0.95rem; position: relative; }
-  .seed-handle { color: #444; font-size: 1.2rem; cursor: grab; }
+  .seed-name { flex: 1; font-size: 0.95rem; position: relative; font-weight: 500; }
+  .seed-handle { color: #30363d; font-size: 1.1rem; cursor: grab; transition: color 0.2s; }
+  .seed-item:hover .seed-handle { color: #484f58; }
   .seed-roster {
     display: none; position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
-    margin-left: 12px; background: #0a1020; border: 1px solid #f09030; border-radius: 6px;
-    padding: 8px 14px; white-space: nowrap; z-index: 10; font-size: 0.8rem;
-    color: #ccc; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    margin-left: 14px; background: #161b22; border: 1px solid #f09030; border-radius: 8px;
+    padding: 10px 16px; white-space: nowrap; z-index: 10; font-size: 0.8rem;
+    color: #8b949e; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    animation: tooltipIn 0.15s ease;
   }
-  .seed-roster .roster-title { color: #f09030; font-weight: 700; margin-bottom: 4px; font-size: 0.75rem; }
-  .seed-roster .roster-player { padding: 1px 0; }
+  @keyframes tooltipIn { from { opacity: 0; transform: translateY(-50%) translateX(-4px); } to { opacity: 1; transform: translateY(-50%) translateX(0); } }
+  .seed-roster .roster-title { color: #f09030; font-weight: 700; margin-bottom: 6px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .seed-roster .roster-player { padding: 2px 0; color: #e6edf3; }
   .seed-name:hover .seed-roster { display: block; }
 
-  .seed-arrows { display: flex; flex-direction: column; gap: 2px; }
+  .seed-arrows { display: flex; flex-direction: column; gap: 3px; }
   .seed-arrows button {
-    background: #1a1a2e; border: 1px solid #2a2a4a; color: #888; width: 28px; height: 22px;
-    border-radius: 3px; cursor: pointer; font-size: 0.7rem; display: flex; align-items: center;
-    justify-content: center; transition: all 0.15s;
+    background: #0d1117; border: 1px solid #21262d; color: #484f58; width: 28px; height: 24px;
+    border-radius: 4px; cursor: pointer; font-size: 0.7rem; display: flex; align-items: center;
+    justify-content: center; transition: all 0.2s ease;
   }
-  .seed-arrows button:hover { border-color: #f09030; color: #f09030; }
+  .seed-arrows button:hover { border-color: #f09030; color: #f09030; background: #161b22; }
+  .seed-arrows button:disabled { opacity: 0.3; cursor: default; }
 
-  .confirm-area { max-width: 500px; margin: 24px auto 0; text-align: center; }
+  .confirm-area { margin: 28px 0 0; text-align: center; }
   .confirm-btn {
-    padding: 12px 40px; border-radius: 6px; border: none;
-    background: #4CAF50; color: #fff; font-size: 1.1rem; font-weight: 700;
-    cursor: pointer; transition: all 0.15s;
+    padding: 12px 44px; border-radius: 8px; border: none;
+    background: #3fb950; color: #fff; font-size: 1.05rem; font-weight: 700;
+    cursor: pointer; transition: all 0.25s ease;
   }
-  .confirm-btn:hover { background: #45a049; }
-  .confirm-btn:disabled { background: #333; cursor: not-allowed; }
-  .confirm-status { margin-top: 12px; color: #888; font-size: 0.9rem; }
-  .confirm-status.error { color: #e74c3c; }
+  .confirm-btn:hover { background: #2ea043; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(63,185,80,0.3); }
+  .confirm-btn:disabled { background: #21262d; color: #484f58; cursor: not-allowed; transform: none; box-shadow: none; }
+  .confirm-status { margin-top: 14px; color: #8b949e; font-size: 0.85rem; transition: color 0.3s; }
+  .confirm-status.error { color: #f85149; }
 </style>
 </head>
 <body>
-<h1 id="title">Loading...</h1>
-<p class="subtitle">Drag teams to reorder seeding, then confirm to create the bracket.</p>
+<div class="header">
+  <h1 id="title">Loading...</h1>
+  <p>Drag teams to reorder seeding, then confirm to create the bracket.</p>
+</div>
+<div class="container">
 
 <div class="seeding-list" id="seeding-list"></div>
 
 <div class="confirm-area">
   <button class="confirm-btn" id="confirm-btn" disabled>Confirm &amp; Create Bracket</button>
   <p class="confirm-status" id="confirm-status"></p>
+</div>
+
 </div>
 
 <script>
@@ -2350,8 +2452,8 @@ async function loadDashboard() {
     const card = document.createElement("div");
     card.className = "t-card";
 
-    const statusClass = t.challonge_id ? (t.open ? "started" : "started") : (t.open ? "open" : "ended");
-    const statusText = t.open ? "Sign-ups Open" : (t.challonge_id ? "In Progress" : "Ended");
+    const statusClass = t.ended ? "ended" : (t.challonge_id ? "started" : (t.open ? "open" : "ended"));
+    const statusText = t.ended ? "Ended" : (t.open ? "Sign-ups Open" : (t.challonge_id ? "In Progress" : "Closed"));
     const teamCount = t.teams.length;
 
     // Header
@@ -2382,7 +2484,7 @@ function buildDetail(t) {
   html += detailRow("Tournament ID", t.id);
   html += detailRow("Organizer", t.organizer_name || "Unknown");
   html += detailRow("Team Size", t.team_size + "v" + t.team_size);
-  html += detailRow("Status", t.open ? "Sign-ups Open" : (t.challonge_id ? "In Progress" : "Closed"));
+  html += detailRow("Status", t.ended ? "Ended" : (t.open ? "Sign-ups Open" : (t.challonge_id ? "In Progress" : "Closed")));
   if (t.challonge_url) {
     html += detailRow("Bracket", '<a href="' + esc(t.challonge_url) + '" target="_blank">View on Challonge &#8599;</a>');
   }
@@ -2512,6 +2614,7 @@ async def handle_api_dashboard(request: web.Request) -> web.Response:
             "id": t_id,
             "name": t.get("name", t_id),
             "open": t.get("open", False),
+            "ended": t.get("ended", False),
             "team_size": t.get("team_size", "?"),
             "organizer_name": t.get("organizer_name", "Unknown"),
             "challonge_id": t.get("challonge_id"),
@@ -2835,7 +2938,11 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     all_player_ids = t1_player_ids + t2_player_ids
 
     staff_role = guild.get_role(ROLE_ID)
-    t_cat, _ = get_categories(guild)
+
+    # Find or create the Matchrooms category
+    match_cat = discord.utils.get(guild.categories, name="Matchrooms")
+    if not match_cat:
+        match_cat = await guild.create_category("Matchrooms")
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2857,7 +2964,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     channel = await guild.create_text_channel(
         name=f"{found_t1['team_name']} vs {found_t2['team_name']}",
         overwrites=overwrites,
-        category=t_cat,
+        category=match_cat,
     )
 
     match_id = str(uuid.uuid4())[:8]
