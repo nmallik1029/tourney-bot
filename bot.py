@@ -267,6 +267,7 @@ class SetupView(discord.ui.View):
     description="Configure which categories tournament channels are placed in.",
     guild=discord.Object(id=SERVER_ID),
 )
+@is_authorized()
 async def tournament_setup(interaction: discord.Interaction):
     categories = interaction.guild.categories
     if not categories:
@@ -735,6 +736,7 @@ async def on_message(message: discord.Message):
 
 
 @bot.tree.command(name="tournament-start", description="Close sign-ups and start the tournament.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
 @app_commands.describe(tournament_id="The tournament ID from /tournament-create")
 async def tournament_start(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
@@ -778,6 +780,7 @@ FAKE_PLAYERS = [
 ]
 
 @bot.tree.command(name="test-scoreboard", description="Post a test scoreboard to see how it looks.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
 @app_commands.describe(
     team_size="Team size for the test scoreboard",
     map_name="Map to use for the background",
@@ -820,6 +823,7 @@ async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_
 
 # ── /tournament-create ─────────────────────────────────────────────────────────
 @bot.tree.command(name="tournament-create", description="Create a new tournament and open sign-ups.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
 async def tournament_create(interaction: discord.Interaction):
     await interaction.response.send_modal(TournamentCreateModal())
 
@@ -828,6 +832,7 @@ async def tournament_create(interaction: discord.Interaction):
 _dashboard_tokens: set[str] = set()
 
 @bot.tree.command(name="tournament-info", description="Open the tournament dashboard.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
 async def tournament_info(interaction: discord.Interaction):
     dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
     if not dashboard_token:
@@ -841,6 +846,7 @@ async def tournament_info(interaction: discord.Interaction):
 # ── /tournament-delete ─────────────────────────────────────────────────────────
 # ── /tournament-end ───────────────────────────────────────────────────────────
 @bot.tree.command(name="tournament-end", description="End a tournament — clean up channels/roles but keep results.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
 @app_commands.describe(tournament_id="The tournament ID to end")
 async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
@@ -927,6 +933,7 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
 
 # ── /tournament-delete ─────────────────────────────────────────────────────────
 @bot.tree.command(name="tournament-delete", description="Delete a tournament and its channels.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
 @app_commands.describe(tournament_id="The tournament ID to delete")
 async def tournament_delete(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
@@ -1000,25 +1007,24 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
 
 
 # ── Global command permission check ──────────────────────────────────────────
-# Commands that anyone can use (no role required)
-PUBLIC_COMMANDS = set()  # Add command names here if you want some open to all users
-
-@bot.tree.interaction_check
-async def global_interaction_check(interaction: discord.Interaction) -> bool:
-    # Allow public commands
-    if interaction.command and interaction.command.name in PUBLIC_COMMANDS:
-        return True
-    if interaction.user.guild_permissions.administrator:
-        return True
-    if any(r.id == ROLE_ID for r in interaction.user.roles):
-        return True
-    await interaction.response.send_message("You don't have permission to use bot commands.", ephemeral=True)
-    return False
+def is_authorized():
+    """Check that user has ROLE_ID or is an administrator."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        if any(r.id == ROLE_ID for r in interaction.user.roles):
+            return True
+        await interaction.response.send_message("You don't have permission to use bot commands.", ephemeral=True)
+        return False
+    return app_commands.check(predicate)
 
 
 # ── Error handler ─────────────────────────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.CheckFailure):
+        # Already handled by the check itself
+        return
     import traceback
     traceback.print_exc()
     print(f"[Error] {error}")
@@ -2896,6 +2902,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     description="Get the admin bracket panel link to start matches.",
     guild=discord.Object(id=SERVER_ID),
 )
+@is_authorized()
 @app_commands.describe(tournament_id="The tournament ID")
 async def bracket_cmd(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
