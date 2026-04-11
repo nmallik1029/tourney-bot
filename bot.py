@@ -20,18 +20,60 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ── Persistent storage ─────────────────────────────────────────────────────────
-TOURNAMENTS_FILE = Path("tournaments.json")
+# ── Persistent storage (GitHub Gist) ──────────────────────────────────────────
+GIST_TOKEN = os.environ.get("GITHUB_GIST_TOKEN", "")
+GIST_ID = os.environ.get("GITHUB_GIST_ID", "")
+TOURNAMENTS_FILE = Path("tournaments.json")  # local fallback
+
+
+def _gist_headers():
+    return {"Authorization": f"token {GIST_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+
 
 def load_tournaments() -> dict:
+    if GIST_TOKEN and GIST_ID:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers=_gist_headers(),
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                gist = json.loads(resp.read().decode())
+                content = gist["files"]["tournaments.json"]["content"]
+                data = json.loads(content)
+                print(f"[Storage] Loaded {len(data)} tournaments from Gist")
+                return data
+        except Exception as e:
+            print(f"[Storage] Failed to load from Gist: {e}")
+    # Fallback to local file
     if TOURNAMENTS_FILE.exists():
         with open(TOURNAMENTS_FILE, "r") as f:
             return json.load(f)
     return {}
 
+
 def save_tournaments():
+    data_str = json.dumps(tournaments, indent=2, default=str)
+    # Save locally as backup
     with open(TOURNAMENTS_FILE, "w") as f:
-        json.dump(tournaments, f, indent=2, default=str)
+        f.write(data_str)
+    # Save to Gist
+    if GIST_TOKEN and GIST_ID:
+        try:
+            import urllib.request
+            payload = json.dumps({"files": {"tournaments.json": {"content": data_str}}}).encode()
+            req = urllib.request.Request(
+                f"https://api.github.com/gists/{GIST_ID}",
+                data=payload,
+                headers={**_gist_headers(), "Content-Type": "application/json"},
+                method="PATCH",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                pass
+        except Exception as e:
+            print(f"[Storage] Failed to save to Gist: {e}")
+
 
 def load_config() -> dict:
     config_file = Path("config.json")
@@ -316,6 +358,7 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
             "date": self.date.value,
             "signups_channel_id": signups_channel.id,
             "organizer_id": interaction.user.id,
+            "organizer_name": interaction.user.display_name,
             "teams": [],
             "open": True,
         }
@@ -779,6 +822,24 @@ async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_
 @bot.tree.command(name="tournament-create", description="Create a new tournament and open sign-ups.", guild=discord.Object(id=SERVER_ID))
 async def tournament_create(interaction: discord.Interaction):
     await interaction.response.send_modal(TournamentCreateModal())
+
+
+# ── /tournament-info ──────────────────────────────────────────────────────────
+@bot.tree.command(name="tournament-info", description="Open the tournament dashboard.", guild=discord.Object(id=SERVER_ID))
+async def tournament_info(interaction: discord.Interaction):
+    # Use a global dashboard token or generate one
+    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
+    if not dashboard_token:
+        # Fall back to first tournament's admin token, or generate a temporary one
+        for t in tournaments.values():
+            if t.get("admin_token"):
+                dashboard_token = t["admin_token"]
+                break
+    if not dashboard_token:
+        dashboard_token = str(uuid.uuid4())
+
+    url = f"{RAILWAY_BASE}/dashboard?token={dashboard_token}"
+    await interaction.response.send_message(f"**Tournament Dashboard:**\n{url}", ephemeral=True)
 
 
 # ── /tournament-delete ─────────────────────────────────────────────────────────
@@ -2046,6 +2107,324 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tournament Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  .header {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border-bottom: 1px solid #21262d; padding: 28px 32px;
+  }
+  .header h1 { font-size: 1.6rem; font-weight: 600; }
+  .header p { color: #8b949e; font-size: 0.85rem; margin-top: 4px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 32px; }
+
+  /* Tournament list */
+  .tournament-list { display: flex; flex-direction: column; gap: 12px; }
+  .t-card {
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    overflow: hidden; cursor: pointer; transition: all 0.25s ease;
+  }
+  .t-card:hover { border-color: #f09030; transform: translateY(-2px); box-shadow: 0 4px 20px rgba(240,144,48,0.1); }
+  .t-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; gap: 16px;
+  }
+  .t-card-title { font-size: 1.05rem; font-weight: 600; }
+  .t-card-meta { display: flex; gap: 12px; align-items: center; flex-shrink: 0; }
+  .badge {
+    padding: 3px 10px; border-radius: 12px; font-size: 0.7rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .badge.open { background: rgba(63,185,80,0.15); color: #3fb950; }
+  .badge.started { background: rgba(240,144,48,0.15); color: #f09030; }
+  .badge.ended { background: rgba(139,148,158,0.15); color: #8b949e; }
+  .team-count { color: #8b949e; font-size: 0.8rem; }
+  .chevron { color: #484f58; font-size: 1.2rem; transition: transform 0.3s ease; }
+  .t-card.expanded .chevron { transform: rotate(90deg); }
+
+  /* Expanded detail panel */
+  .t-card-detail {
+    max-height: 0; overflow: hidden; transition: max-height 0.4s ease, padding 0.3s ease;
+    background: #0d1117; border-top: 1px solid #21262d;
+  }
+  .t-card.expanded .t-card-detail { max-height: 2000px; padding: 20px; }
+
+  .detail-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  @media (max-width: 700px) { .detail-grid { grid-template-columns: 1fr; } }
+
+  .detail-section {
+    background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 14px 16px;
+  }
+  .detail-section h3 {
+    font-size: 0.75rem; color: #f09030; text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 10px; font-weight: 700;
+  }
+  .detail-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 0; font-size: 0.85rem; border-bottom: 1px solid #21262d;
+  }
+  .detail-row:last-child { border-bottom: none; }
+  .detail-label { color: #8b949e; }
+  .detail-value { font-weight: 500; }
+  .detail-value a { color: #f09030; text-decoration: none; }
+  .detail-value a:hover { text-decoration: underline; }
+
+  /* Team list inside detail */
+  .team-list { list-style: none; }
+  .team-list li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 0.85rem;
+  }
+  .team-list li:last-child { border-bottom: none; }
+  .team-seed-badge {
+    background: #21262d; color: #f09030; font-weight: 700; font-size: 0.7rem;
+    width: 24px; height: 24px; border-radius: 50%; display: flex;
+    align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .team-players { color: #8b949e; font-size: 0.75rem; margin-left: auto; }
+
+  /* Matches section */
+  .match-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 0.85rem;
+  }
+  .match-item:last-child { border-bottom: none; }
+  .match-vs { color: #484f58; font-size: 0.75rem; }
+  .match-score { color: #f09030; font-weight: 700; margin-left: auto; }
+  .match-live { color: #3fb950; font-weight: 600; font-size: 0.75rem; margin-left: auto; }
+
+  .empty-state { color: #484f58; font-style: italic; font-size: 0.85rem; padding: 8px 0; }
+
+  /* Action links */
+  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .action-btn {
+    display: inline-block; padding: 7px 16px; border-radius: 6px; font-size: 0.8rem;
+    font-weight: 600; text-decoration: none; transition: all 0.2s ease;
+    border: 1px solid #21262d; color: #e6edf3; background: #161b22;
+  }
+  .action-btn:hover { border-color: #f09030; color: #f09030; }
+  .action-btn.primary { background: #f09030; color: #000; border-color: #f09030; }
+  .action-btn.primary:hover { background: #d67d20; }
+
+  .loading { text-align: center; padding: 60px; color: #8b949e; }
+  .no-tournaments { text-align: center; padding: 80px 20px; color: #484f58; }
+  .no-tournaments h2 { font-size: 1.2rem; margin-bottom: 8px; color: #8b949e; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Tournament Dashboard</h1>
+  <p>All tournaments at a glance. Click to expand.</p>
+</div>
+<div class="container">
+  <div id="content" class="loading">Loading tournaments...</div>
+</div>
+
+<script>
+const TOKEN = "{{TOKEN}}";
+
+async function loadDashboard() {
+  const resp = await fetch(`/api/dashboard?token=${TOKEN}`);
+  if (!resp.ok) { document.getElementById("content").textContent = "Error loading data."; return; }
+  const data = await resp.json();
+  const container = document.getElementById("content");
+
+  if (!data.tournaments || data.tournaments.length === 0) {
+    container.innerHTML = '<div class="no-tournaments"><h2>No tournaments yet</h2><p>Create one with /tournament-create</p></div>';
+    container.className = "";
+    return;
+  }
+
+  container.className = "tournament-list";
+  container.innerHTML = "";
+
+  for (const t of data.tournaments) {
+    const card = document.createElement("div");
+    card.className = "t-card";
+
+    const statusClass = t.challonge_id ? (t.open ? "started" : "started") : (t.open ? "open" : "ended");
+    const statusText = t.open ? "Sign-ups Open" : (t.challonge_id ? "In Progress" : "Ended");
+    const teamCount = t.teams.length;
+
+    // Header
+    card.innerHTML =
+      '<div class="t-card-header">' +
+        '<span class="t-card-title">' + esc(t.name) + '</span>' +
+        '<div class="t-card-meta">' +
+          '<span class="team-count">' + teamCount + ' team' + (teamCount !== 1 ? 's' : '') + '</span>' +
+          '<span class="badge ' + statusClass + '">' + statusText + '</span>' +
+          '<span class="chevron">&#9656;</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="t-card-detail">' + buildDetail(t) + '</div>';
+
+    card.querySelector(".t-card-header").addEventListener("click", () => {
+      card.classList.toggle("expanded");
+    });
+
+    container.appendChild(card);
+  }
+}
+
+function buildDetail(t) {
+  let html = '<div class="detail-grid">';
+
+  // Info section
+  html += '<div class="detail-section"><h3>Info</h3>';
+  html += detailRow("Tournament ID", t.id);
+  html += detailRow("Organizer", t.organizer_name || "Unknown");
+  html += detailRow("Team Size", t.team_size + "v" + t.team_size);
+  html += detailRow("Status", t.open ? "Sign-ups Open" : (t.challonge_id ? "In Progress" : "Closed"));
+  if (t.challonge_url) {
+    html += detailRow("Bracket", '<a href="' + esc(t.challonge_url) + '" target="_blank">View on Challonge &#8599;</a>');
+  }
+  if (t.admin_panel_url) {
+    html += detailRow("Admin Panel", '<a href="' + esc(t.admin_panel_url) + '" target="_blank">Open &#8599;</a>');
+  }
+  html += '</div>';
+
+  // Teams section
+  html += '<div class="detail-section"><h3>Teams (' + t.teams.length + ')</h3>';
+  if (t.teams.length === 0) {
+    html += '<div class="empty-state">No teams registered yet.</div>';
+  } else {
+    html += '<ul class="team-list">';
+    t.teams.forEach((tm, i) => {
+      const players = tm.players.map(p => esc(p)).join(", ");
+      html += '<li>' +
+        '<span class="team-seed-badge">' + (i + 1) + '</span>' +
+        '<span>' + esc(tm.team_name) + '</span>' +
+        '<span class="team-players">' + players + '</span>' +
+      '</li>';
+    });
+    html += '</ul>';
+  }
+  html += '</div>';
+
+  // Active matches section
+  html += '<div class="detail-section" style="grid-column: 1 / -1;"><h3>Matches</h3>';
+  if (!t.matches || t.matches.length === 0) {
+    html += '<div class="empty-state">No matches started yet.</div>';
+  } else {
+    t.matches.forEach(m => {
+      const t1 = m.team1 || "TBD";
+      const t2 = m.team2 || "TBD";
+      let scoreHtml = '';
+      if (m.series_score) scoreHtml = '<span class="match-score">' + esc(m.series_score) + '</span>';
+      else scoreHtml = '<span class="match-live">LIVE</span>';
+      html += '<div class="match-item">' +
+        '<span>' + esc(t1) + '</span>' +
+        '<span class="match-vs">vs</span>' +
+        '<span>' + esc(t2) + '</span>' +
+        scoreHtml +
+      '</div>';
+    });
+  }
+  html += '</div>';
+
+  html += '</div>'; // close detail-grid
+
+  // Actions
+  html += '<div class="actions">';
+  if (t.challonge_url) {
+    html += '<a class="action-btn primary" href="' + esc(t.challonge_url) + '" target="_blank">Challonge Bracket</a>';
+  }
+  if (t.admin_panel_url) {
+    html += '<a class="action-btn" href="' + esc(t.admin_panel_url) + '" target="_blank">Admin Panel</a>';
+  }
+  html += '</div>';
+
+  return html;
+}
+
+function detailRow(label, value) {
+  return '<div class="detail-row"><span class="detail-label">' + label + '</span><span class="detail-value">' + value + '</span></div>';
+}
+
+function esc(s) { if (!s) return ""; const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+loadDashboard();
+</script>
+</body>
+</html>"""
+
+
+async def handle_dashboard(request: web.Request) -> web.Response:
+    token = request.query.get("token", "")
+    # Validate token matches any tournament's admin token or a global dashboard token
+    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
+    valid = (dashboard_token and token == dashboard_token) or any(
+        t.get("admin_token") == token for t in tournaments.values()
+    )
+    if not valid:
+        return web.Response(status=403, text="Invalid token.")
+    html = DASHBOARD_HTML.replace("{{TOKEN}}", token)
+    return web.Response(content_type="text/html", text=html)
+
+
+async def handle_api_dashboard(request: web.Request) -> web.Response:
+    token = request.query.get("token", "")
+    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
+    valid = (dashboard_token and token == dashboard_token) or any(
+        t.get("admin_token") == token for t in tournaments.values()
+    )
+    if not valid:
+        return web.json_response({"error": "forbidden"}, status=403)
+
+    result = []
+    for t_id, t in tournaments.items():
+        teams_data = []
+        for tm in t.get("teams", []):
+            igns = [p.get("ign", "Unknown") for p in tm.get("players", [])]
+            teams_data.append({"team_name": tm["team_name"], "team_id": tm["team_id"], "players": igns})
+
+        # Gather active matches for this tournament
+        match_data = []
+        for mid, m in active_matches.items():
+            if m.get("tournament_id") == t_id:
+                t1 = m["teams"][0]["name"] if m.get("teams") else "?"
+                t2 = m["teams"][1]["name"] if m.get("teams") and len(m["teams"]) > 1 else "?"
+                series = m.get("series_score", {})
+                fmt = m.get("format", "bo1")
+                if series:
+                    s1 = series.get(t1.lower(), 0)
+                    s2 = series.get(t2.lower(), 0)
+                    score_str = f"{s1}-{s2}"
+                else:
+                    score_str = None
+                match_data.append({"team1": t1, "team2": t2, "format": fmt, "series_score": score_str})
+
+        admin_panel_url = None
+        if t.get("admin_token") and t.get("challonge_id"):
+            admin_panel_url = f"{RAILWAY_BASE}/admin/{t_id}?token={t['admin_token']}"
+
+        result.append({
+            "id": t_id,
+            "name": t.get("name", t_id),
+            "open": t.get("open", False),
+            "team_size": t.get("team_size", "?"),
+            "organizer_name": t.get("organizer_name", "Unknown"),
+            "challonge_id": t.get("challonge_id"),
+            "challonge_url": t.get("challonge_url"),
+            "admin_panel_url": admin_panel_url,
+            "teams": teams_data,
+            "matches": match_data,
+        })
+
+    return web.json_response({"tournaments": result})
+
+
 async def start_webhook_server():
     app = web.Application()
     app.router.add_post("/krunker", handle_krunker_webhook)
@@ -2056,6 +2435,8 @@ async def start_webhook_server():
     app.router.add_post("/api/confirm-seeding", handle_api_confirm_seeding)
     app.router.add_get("/api/tournament/{tournament_id}", handle_api_tournament)
     app.router.add_post("/api/start-match", handle_api_start_match)
+    app.router.add_get("/dashboard", handle_dashboard)
+    app.router.add_get("/api/dashboard", handle_api_dashboard)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
