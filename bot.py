@@ -678,10 +678,9 @@ async def on_message(message: discord.Message):
             current_map = all_maps[map_idx] if map_idx < len(all_maps) else "Unknown"
 
             await message.channel.send(
-                f"**{current_map}** is ready!\n"
                 f"{link}\n\n"
-                f"**{team1['name']}** (Team 1 / higher seed) join first.\n"
-                f"**{team2['name']}** (Team 2) join second.\n\n"
+                f"**{team1['name']}** (Team 1 / higher seed) join **Alpha**.\n"
+                f"**{team2['name']}** (Team 2 / lower seed) join **Beta**.\n\n"
                 f"{all_pings}"
             )
             return
@@ -795,17 +794,41 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
         await interaction.response.send_message("Only the tournament organizer can delete this tournament.", ephemeral=True)
         return
 
+    await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
+
+    # Delete main tournament channels
     for key in ["signups_channel_id", "updates_channel_id", "matches_channel_id", "admin_channel_id", "bracket_channel_id"]:
         ch_id = t.get(key)
         if ch_id:
             ch = guild.get_channel(ch_id)
             if ch:
-                await ch.delete()
+                try:
+                    await ch.delete()
+                except Exception:
+                    pass
+
+    # Delete per-team channels and roles
+    for team_id, ch_ids in t.get("team_channels", {}).items():
+        for ch_id in [ch_ids.get("text"), ch_ids.get("voice")]:
+            if ch_id:
+                ch = guild.get_channel(ch_id)
+                if ch:
+                    try:
+                        await ch.delete()
+                    except Exception:
+                        pass
+    for team_id, role_id in t.get("team_roles", {}).items():
+        role = guild.get_role(role_id)
+        if role:
+            try:
+                await role.delete()
+            except Exception:
+                pass
 
     del tournaments[t_id]
     save_tournaments()
-    await interaction.response.send_message(f"Tournament `{t_id}` has been deleted.", ephemeral=True)
+    await interaction.followup.send(f"Tournament `{t_id}` has been deleted.")
 
 
 # ── Error handler ─────────────────────────────────────────────────────────────
@@ -1595,9 +1618,17 @@ SEEDING_HTML = """<!DOCTYPE html>
     font-size: 1.1rem; font-weight: 700; color: #f09030; min-width: 28px;
     text-align: center;
   }
-  .seed-name { flex: 1; font-size: 0.95rem; }
-  .seed-players { color: #666; font-size: 0.75rem; }
+  .seed-name { flex: 1; font-size: 0.95rem; position: relative; }
   .seed-handle { color: #444; font-size: 1.2rem; cursor: grab; }
+  .seed-roster {
+    display: none; position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+    margin-left: 12px; background: #0a1020; border: 1px solid #f09030; border-radius: 6px;
+    padding: 8px 14px; white-space: nowrap; z-index: 10; font-size: 0.8rem;
+    color: #ccc; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  .seed-roster .roster-title { color: #f09030; font-weight: 700; margin-bottom: 4px; font-size: 0.75rem; }
+  .seed-roster .roster-player { padding: 1px 0; }
+  .seed-name:hover .seed-roster { display: block; }
 
   .seed-arrows { display: flex; flex-direction: column; gap: 2px; }
   .seed-arrows button {
@@ -1655,13 +1686,15 @@ function renderList() {
     item.draggable = true;
     item.dataset.index = i;
 
-    const playerCount = t.player_count || "?";
+    const players = t.players || [];
+    let rosterHtml = '<div class="seed-roster"><div class="roster-title">Players</div>';
+    players.forEach(p => { rosterHtml += '<div class="roster-player">' + esc(p) + '</div>'; });
+    rosterHtml += '</div>';
 
     item.innerHTML =
       '<span class="seed-handle">&#9776;</span>' +
       '<span class="seed-num">' + (i + 1) + '</span>' +
-      '<div style="flex:1"><div class="seed-name">' + esc(t.team_name) + '</div>' +
-      '<div class="seed-players">' + playerCount + ' players</div></div>' +
+      '<div style="flex:1"><div class="seed-name">' + esc(t.team_name) + rosterHtml + '</div></div>' +
       '<div class="seed-arrows">' +
         '<button data-dir="up" data-idx="' + i + '"' + (i === 0 ? ' disabled' : '') + '>&#9650;</button>' +
         '<button data-dir="down" data-idx="' + i + '"' + (i === teams.length - 1 ? ' disabled' : '') + '>&#9660;</button>' +
@@ -1766,10 +1799,11 @@ async def handle_api_seeding(request: web.Request) -> web.Response:
 
     team_list = []
     for tm in t.get("teams", []):
+        igns = [p.get("ign", "Unknown") for p in tm.get("players", [])]
         team_list.append({
             "team_id": tm["team_id"],
             "team_name": tm["team_name"],
-            "player_count": len(tm.get("player_ids", [])),
+            "players": igns,
         })
     return web.json_response({"name": t["name"], "teams": team_list})
 
@@ -1833,6 +1867,43 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
         save_tournaments()
     except Exception as e:
         return web.json_response({"error": f"channel creation failed: {e}"}, status=500)
+
+    # Create per-team roles and channels (text + vc)
+    t["team_roles"] = {}
+    t["team_channels"] = {}
+    for tm in seeded_teams:
+        team_name = tm["team_name"]
+        safe_name = re.sub(r"[^a-z0-9\-]", "-", team_name.lower()).strip("-")[:90]
+        try:
+            role = await guild.create_role(name=team_name, mentionable=True)
+            tm["role_id"] = role.id
+            t["team_roles"][tm["team_id"]] = role.id
+
+            # Assign role to team members
+            for pid in tm.get("player_ids", []):
+                member = guild.get_member(pid)
+                if member:
+                    try:
+                        await member.add_roles(role)
+                    except Exception:
+                        pass
+
+            # Channel perms: only this team + staff + bot can see
+            team_perms = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True),
+                role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, connect=True, speak=True),
+            }
+            if staff_role:
+                team_perms[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, connect=True, speak=True)
+
+            text_ch = await guild.create_text_channel(name=safe_name, overwrites=team_perms, category=t_cat)
+            voice_ch = await guild.create_voice_channel(name=safe_name, overwrites=team_perms, category=t_cat)
+            t["team_channels"][tm["team_id"]] = {"text": text_ch.id, "voice": voice_ch.id}
+            print(f"[Teams] Created role + channels for {team_name}")
+        except Exception as e:
+            print(f"[Teams] Error creating role/channels for {team_name}: {e}")
+    save_tournaments()
 
     # Create Challonge bracket
     team_count = len(seeded_teams)
