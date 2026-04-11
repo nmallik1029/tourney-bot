@@ -860,6 +860,49 @@ async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_
         await interaction.followup.send(f"Failed to generate scoreboard: {e}", ephemeral=True)
 
 
+# ── /tournament-remove-team ───────────────────────────────────────────────────
+@bot.tree.command(name="tournament-remove-team", description="Remove a team from a tournament.", guild=discord.Object(id=SERVER_ID))
+@is_authorized()
+@app_commands.describe(tournament_id="The tournament ID", team_name="The team name to remove")
+async def tournament_remove_team(interaction: discord.Interaction, tournament_id: str, team_name: str):
+    t_id = tournament_id.upper()
+    if t_id not in tournaments:
+        await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
+        return
+
+    t = tournaments[t_id]
+    # Find the team (case-insensitive)
+    found_team = None
+    for tm in t.get("teams", []):
+        if tm["team_name"].lower() == team_name.lower():
+            found_team = tm
+            break
+
+    if not found_team:
+        team_list = ", ".join(tm["team_name"] for tm in t.get("teams", []))
+        await interaction.response.send_message(
+            f"Team `{team_name}` not found.\nRegistered teams: {team_list or 'None'}",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Delete signup message if it exists
+    signups_ch = interaction.guild.get_channel(t.get("signups_channel_id"))
+    if signups_ch and found_team.get("signup_message_id"):
+        try:
+            msg = await signups_ch.fetch_message(found_team["signup_message_id"])
+            await msg.delete()
+        except Exception:
+            pass
+
+    t["teams"].remove(found_team)
+    save_tournaments()
+
+    await interaction.followup.send(f"Team **{found_team['team_name']}** has been removed from `{t_id}`.")
+
+
 # ── /tournament-create ─────────────────────────────────────────────────────────
 @bot.tree.command(name="tournament-create", description="Create a new tournament and open sign-ups.", guild=discord.Object(id=SERVER_ID))
 @is_authorized()
