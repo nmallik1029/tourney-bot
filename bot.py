@@ -380,7 +380,9 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
 
         view = SignupView(tournament_id=tournament_id)
         save_tournaments()
-        await signups_channel.send(embed=embed, view=view)
+        signup_btn_msg = await signups_channel.send(embed=embed, view=view)
+        tournaments[tournament_id]["signup_button_message_id"] = signup_btn_msg.id
+        save_tournaments()
         await interaction.response.send_message(
             f"Tournament **{self.tournament_name.value}** created!\n"
             f"Sign-ups are open in {signups_channel.mention}\n"
@@ -531,10 +533,33 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
 
         signups_ch = interaction.guild.get_channel(t["signups_channel_id"])
         if signups_ch:
+            # Post team submission
             embed = build_team_embed(team_entry, self.tournament_id, interaction.user.name)
             view = EditRosterView(team_id=team_entry["team_id"], tournament_id=self.tournament_id)
             msg = await signups_ch.send(embed=embed, view=view)
             team_entry["signup_message_id"] = msg.id
+
+            # Delete old sign-up button and repost at bottom
+            old_btn_id = t.get("signup_button_message_id")
+            if old_btn_id:
+                try:
+                    old_msg = await signups_ch.fetch_message(old_btn_id)
+                    await old_msg.delete()
+                except Exception:
+                    pass
+
+            signup_embed = discord.Embed(
+                title=f"{t['name']}  —  Registration",
+                description=f"Click the button below to register for the **{t['name']}**!",
+                color=0x00FF7F,
+            )
+            signup_embed.add_field(name="Prizes", value=t.get("prizes", "N/A"), inline=True)
+            signup_embed.add_field(name="Format", value=t.get("format", "N/A").upper(), inline=True)
+            signup_embed.add_field(name="Date", value=t.get("date", "N/A"), inline=True)
+            signup_embed.set_footer(text=f"Tournament ID: {self.tournament_id}")
+
+            new_btn_msg = await signups_ch.send(embed=signup_embed, view=SignupView(tournament_id=self.tournament_id))
+            t["signup_button_message_id"] = new_btn_msg.id
             save_tournaments()
 
         await interaction.response.send_message(
