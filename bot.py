@@ -7,6 +7,7 @@ import re
 import random
 import asyncio
 import os
+import io
 import urllib.parse
 from pathlib import Path
 import aiohttp
@@ -808,6 +809,22 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
                 except Exception:
                     pass
 
+    # Delete match room channels and clean up active matches
+    match_ids_to_remove = []
+    for mid, match in active_matches.items():
+        if match.get("tournament_id") == t_id:
+            ch_id = match.get("channel_id")
+            if ch_id:
+                ch = guild.get_channel(ch_id)
+                if ch:
+                    try:
+                        await ch.delete()
+                    except Exception:
+                        pass
+            match_ids_to_remove.append(mid)
+    for mid in match_ids_to_remove:
+        del active_matches[mid]
+
     # Delete per-team channels, categories, and roles
     for team_id, ch_ids in t.get("team_channels", {}).items():
         for ch_id in [ch_ids.get("text"), ch_ids.get("voice")]:
@@ -945,6 +962,8 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     )
 
     # Generate scoreboard image
+    img_buf = None
+    image_file = None
     try:
         from scoreboard import draw_scoreboard, RED, WHITE
         img_buf = draw_scoreboard(
@@ -965,17 +984,6 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         print(f"[Scoreboard] Failed to generate image: {e}")
         import traceback
         traceback.print_exc()
-        image_file = None
-
-    for g in bot.guilds:
-        ch = g.get_channel(matched_tournament["updates_channel_id"])
-        if ch:
-            if image_file:
-                await ch.send(file=image_file)
-            else:
-                await ch.send(f"**{winner_discord['team_name']}** won {score_str} against **{loser_discord['team_name']}**")
-            print(f"[Webhook] Posted result: {winner_discord['team_name']} won {score_str} vs {loser_discord['team_name']}")
-            break
 
     # Track series score and report to Challonge when series is decided
     active_match = next(
@@ -987,6 +995,13 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     )
 
     if active_match:
+        # Store scoreboard image for this map
+        if "scoreboard_images" not in active_match:
+            active_match["scoreboard_images"] = []
+        if img_buf:
+            img_buf.seek(0)
+            active_match["scoreboard_images"].append(img_buf.read())
+
         series = active_match.get("series_score", {})
         winner_key = winner_discord["team_name"].lower()
         loser_key = loser_discord["team_name"].lower()
@@ -1002,22 +1017,59 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         print(f"[Series] {winner_discord['team_name']} {winner_series_wins} - {loser_series_wins} {loser_discord['team_name']} ({fmt}, need {wins_needed})")
 
         # Post series update to match channel
-        for g in bot.guilds:
-            match_ch = g.get_channel(active_match.get("channel_id"))
-            if match_ch:
-                if winner_series_wins >= wins_needed:
-                    await match_ch.send(
-                        f"**{winner_discord['team_name']}** wins the series **{winner_series_wins}-{loser_series_wins}**! 🎉"
+        match_ch = bot.get_channel(active_match.get("channel_id"))
+        if match_ch:
+            if winner_series_wins >= wins_needed:
+                await match_ch.send(
+                    f"**{winner_discord['team_name']}** wins the series **{winner_series_wins}-{loser_series_wins}**! 🎉"
+                )
+            else:
+                # Reply to the pick/ban message so the host can find the host button
+                pb_msg_id = active_match.get("pickban_message_id")
+                reference = discord.MessageReference(message_id=pb_msg_id, channel_id=match_ch.id) if pb_msg_id else None
+                host_id = active_match.get("host_captain_id")
+                host_ping = f"<@{host_id}>" if host_id else ""
+                await match_ch.send(
+                    f"**{winner_discord['team_name']}** wins this map! "
+                    f"Series: **{winner_series_wins}-{loser_series_wins}**\n\n"
+                    f"{host_ping} Host the next map! Use the host button above.",
+                    reference=reference,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+
+        # When the series is decided, post all scoreboards together
+        if winner_series_wins >= wins_needed:
+            # Determine overall series winner/loser names
+            # The team whose key matches winner_key is the series winner
+            t1_name = active_match["teams"][0]["name"]
+            t2_name = active_match["teams"][1]["name"]
+            if t1_name.lower() == winner_key:
+                series_winner = t1_name
+                series_loser = t2_name
+            else:
+                series_winner = t2_name
+                series_loser = t1_name
+
+            updates_ch = bot.get_channel(active_match.get("updates_channel_id"))
+            if updates_ch:
+                stored_images = active_match.get("scoreboard_images", [])
+                if stored_images:
+                    files = []
+                    for i, img_bytes in enumerate(stored_images):
+                        buf = io.BytesIO(img_bytes)
+                        buf.seek(0)
+                        files.append(discord.File(buf, filename=f"map{i+1}.png"))
+                    await updates_ch.send(
+                        f"**{series_winner}** won **{winner_series_wins}-{loser_series_wins}** against **{series_loser}**",
+                        files=files,
                     )
                 else:
-                    await match_ch.send(
-                        f"**{winner_discord['team_name']}** wins this map! "
-                        f"Series: **{winner_series_wins}-{loser_series_wins}**"
+                    await updates_ch.send(
+                        f"**{series_winner}** won **{winner_series_wins}-{loser_series_wins}** against **{series_loser}**"
                     )
-                break
+                print(f"[Webhook] Posted series result: {series_winner} {winner_series_wins}-{loser_series_wins} {series_loser}")
 
-        # Only report to Challonge when the series is decided
-        if winner_series_wins >= wins_needed:
+            # Report to Challonge
             challonge_id = active_match.get("challonge_id")
             ch_match_id = active_match.get("challonge_match_id")
             participant_map = active_match.get("challonge_participant_map", {})
@@ -1028,7 +1080,6 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                     open_matches = await challonge_get_matches(challonge_id, state="all")
                     ch_match = next((m for m in open_matches if m["id"] == ch_match_id), None)
                     if ch_match:
-                        # scores_csv: player1's score first
                         if ch_match["player1_id"] == winner_ch_pid:
                             csv = f"{winner_series_wins}-{loser_series_wins}"
                         else:
@@ -1042,6 +1093,21 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
             match_id = active_match.get("match_id")
             if match_id and match_id in active_matches:
                 del active_matches[match_id]
+    else:
+        # No active match found (standalone game) — post immediately
+        updates_ch_id = matched_tournament.get("updates_channel_id")
+        if updates_ch_id:
+            updates_ch = bot.get_channel(updates_ch_id)
+            if updates_ch:
+                if image_file:
+                    await updates_ch.send(
+                        f"**{winner_discord['team_name']}** won **{score_str}** against **{loser_discord['team_name']}**",
+                        file=image_file,
+                    )
+                else:
+                    await updates_ch.send(
+                        f"**{winner_discord['team_name']}** won **{score_str}** against **{loser_discord['team_name']}**"
+                    )
 
     return web.Response(status=200, text="ok")
 
@@ -2190,7 +2256,7 @@ class MapActionButton(discord.ui.Button):
 
             first_map = all_maps[0]
             await interaction.channel.send(
-                f"<@{host_captain_id}> has been randomly selected to **host**.\n"
+                f"<@{host_captain_id}> as the upper seed, you must **host**.\n"
                 f"Please host **{first_map}** on **NY** servers and post the game link here."
             )
 
@@ -2337,6 +2403,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
         view=view,
     )
     await pb_msg.pin()
+    match["pickban_message_id"] = pb_msg.id
     return channel
 
 
