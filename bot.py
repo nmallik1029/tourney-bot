@@ -46,7 +46,7 @@ def save_config(data: dict):
 
 tournaments: dict[str, dict] = load_tournaments()
 
-ROLE_ID = 1489047073142739035  # Role required for bot commands and staff channel access
+ROLE_ID = 1492371308774948894  # Role required for bot commands and staff channel access
 SERVER_ID = 1489359260348579840
 
 # ── Challonge API ─────────────────────────────────────────────────────────────
@@ -858,6 +858,8 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
 # ── Global command permission check ──────────────────────────────────────────
 @bot.tree.interaction_check
 async def global_interaction_check(interaction: discord.Interaction) -> bool:
+    if interaction.user.guild_permissions.administrator:
+        return True
     if any(r.id == ROLE_ID for r in interaction.user.roles):
         return True
     await interaction.response.send_message("You don't have permission to use bot commands.", ephemeral=True)

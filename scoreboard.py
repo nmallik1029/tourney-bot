@@ -118,7 +118,7 @@ def draw_scoreboard(
 
     winner = team1_name if team1_score > team2_score else team2_name
     series = f"{max(team1_score, team2_score)}-{min(team1_score, team2_score)}"
-    after  = f" wins the series {series}!"
+    after  = f" wins the map {series}!"
     bbox_w = draw.textbbox((0, 0), winner, font=f_winner)
     bbox_a = draw.textbbox((0, 0), after,  font=f_winner)
     total_w = (bbox_w[2] - bbox_w[0]) + (bbox_a[2] - bbox_a[0])
