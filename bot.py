@@ -90,6 +90,7 @@ tournaments: dict[str, dict] = load_tournaments()
 
 ROLE_ID = int(os.environ.get("ROLE_ID", 1492368556627591248))  # Role required for bot commands and staff channel access
 SERVER_ID = int(os.environ.get("SERVER_ID", 1481881771736956938))
+CASTER_ROLE_ID = int(os.environ.get("CASTER_ROLE_ID", 0))  # Role to ping in caster-links channel
 
 
 # ── Global command permission check ──────────────────────────────────────────
@@ -716,6 +717,79 @@ class EditIGNModal(discord.ui.Modal, title="Update Team Name & IGNs"):
         )
 
 
+# ── Caster link release via reaction ──────────────────────────────────────────
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) != "✅":
+        return
+
+    # Check if this reaction is on a pending caster link message
+    for match in active_matches.values():
+        pending = match.get("pending_caster_link")
+        if not pending:
+            continue
+        if pending["caster_message_id"] != payload.message_id:
+            continue
+
+        # Verify the reactor has the staff role
+        guild = bot.get_guild(payload.guild_id)
+        if not guild:
+            break
+        member = guild.get_member(payload.user_id)
+        if not member:
+            break
+        staff_role = guild.get_role(ROLE_ID)
+        if not member.guild_permissions.administrator and (not staff_role or staff_role not in member.roles):
+            break
+
+        # Release the link to the match channel
+        match_ch = bot.get_channel(match.get("channel_id"))
+        if not match_ch:
+            break
+
+        link = pending["link"]
+        team1 = match["teams"][0]
+        team2 = match["teams"][1]
+        all_pings = " ".join(
+            f"<@{pid}>" for pid in team1.get("player_ids", []) + team2.get("player_ids", [])
+        )
+
+        join_embed = discord.Embed(
+            title="Step 3/3 — Join the Game",
+            description=(
+                f"**[Click to Join]({link})**\n\n"
+                f"**{team1['name']}** → join **Alpha** (Team 1)\n"
+                f"**{team2['name']}** → join **Beta** (Team 2)"
+            ),
+            color=0x00FF7F,
+        )
+        join_embed.set_footer(text="Join the correct team or the match won't count.")
+
+        await match_ch.send(
+            f"{all_pings}",
+            embed=join_embed,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+
+        # Clean up
+        match.pop("pending_caster_link", None)
+
+        # Update caster message to show it was released
+        try:
+            caster_ch = bot.get_channel(pending["caster_channel_id"])
+            caster_msg = await caster_ch.fetch_message(pending["caster_message_id"])
+            released_embed = caster_msg.embeds[0].copy()
+            released_embed.color = 0x00FF7F
+            released_embed.set_footer(text=f"✅ Released by {member.display_name}")
+            await caster_msg.edit(embed=released_embed)
+        except Exception:
+            pass
+
+        break
+
+
 # ── on_message ────────────────────────────────────────────────────────────────
 @bot.event
 async def on_message(message: discord.Message):
@@ -772,7 +846,7 @@ async def on_message(message: discord.Message):
                     title="Use the Host Button",
                     description=(
                         "Don't host manually — the bot needs to set up tracking.\n\n"
-                        "**Scroll down and click the Host button**, then paste the link."
+                        "**Click the Host button**, then paste the link."
                     ),
                     color=0xFF4444,
                 )
@@ -781,7 +855,7 @@ async def on_message(message: discord.Message):
 
             match_for_channel["host_button_used"] = False
 
-            # Valid NY link — ping all participants
+            # Valid NY link — check if this match is being casted
             team1 = match_for_channel["teams"][0]
             team2 = match_for_channel["teams"][1]
             all_pings = " ".join(
@@ -791,6 +865,50 @@ async def on_message(message: discord.Message):
             all_maps = match_for_channel.get("all_maps", [])
             current_map = all_maps[map_idx] if map_idx < len(all_maps) else "Unknown"
 
+            if match_for_channel.get("casted"):
+                # Delete the link so players can't join early
+                await message.delete()
+
+                # Send link to caster-links channel
+                t_id = match_for_channel.get("tournament_id")
+                t = tournaments.get(t_id, {})
+                caster_ch = bot.get_channel(t.get("caster_channel_id")) if t else None
+
+                if caster_ch:
+                    caster_role = message.guild.get_role(CASTER_ROLE_ID)
+                    caster_ping = caster_role.mention if caster_role else ""
+
+                    caster_embed = discord.Embed(
+                        title=f"{team1['name']} vs {team2['name']} — Map {map_idx + 1}: {current_map}",
+                        description=f"**Link:** {link}",
+                        color=0xFFA500,
+                    )
+                    caster_embed.set_footer(text="React ✅ when the caster is ready to release the link to players.")
+
+                    caster_msg = await caster_ch.send(
+                        caster_ping,
+                        embed=caster_embed,
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    await caster_msg.add_reaction("✅")
+
+                    # Store info needed to release the link later
+                    match_for_channel["pending_caster_link"] = {
+                        "link": link,
+                        "caster_message_id": caster_msg.id,
+                        "caster_channel_id": caster_ch.id,
+                    }
+
+                # Tell the match channel to wait
+                wait_embed = discord.Embed(
+                    title="🎥 This match is being casted!",
+                    description="The link has been sent to the casting team.\nPlease wait for the link to be released.",
+                    color=0xFFA500,
+                )
+                await message.channel.send(embed=wait_embed)
+                return
+
+            # Not casted — send link directly to players
             join_embed = discord.Embed(
                 title="Step 3/3 — Join the Game",
                 description=(
@@ -808,6 +926,38 @@ async def on_message(message: discord.Message):
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
             return
+
+        # Non-link message in a match channel during hosting — re-send host buttons at the bottom
+        if not krunker_link and match_for_channel.get("host_message_id"):
+            ch = message.channel
+            try:
+                old_msg = await ch.fetch_message(match_for_channel["host_message_id"])
+                await old_msg.delete()
+            except discord.NotFound:
+                pass
+
+            match_id = match_for_channel["match_id"]
+            host_captain_id = match_for_channel["host_captain_id"]
+            map_idx = match_for_channel.get("current_map_index", 0)
+            all_maps = match_for_channel.get("all_maps", [])
+            current_map = all_maps[map_idx] if map_idx < len(all_maps) else "Unknown"
+
+            host_embed = discord.Embed(
+                title="Step 2/3 — Host the Match",
+                description=(
+                    f"<@{host_captain_id}>, click the button below to host **Map {map_idx + 1}: {current_map}**."
+                ),
+                color=0xFFA500,
+            )
+            host_embed.set_footer(text="Everyone else: hang tight until the game link is posted.")
+
+            host_view = PickBanView(match_id=match_id)
+            host_view.rebuild()
+            host_msg = await ch.send(
+                embed=host_embed,
+                view=host_view,
+            )
+            match_for_channel["host_message_id"] = host_msg.id
 
 
 # ── /tournament-start ──────────────────────────────────────────────────────────
@@ -1014,7 +1164,7 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
             pass
 
     # Delete tournament channels (signups, updates, admin)
-    for key in ["signups_channel_id", "updates_channel_id", "admin_channel_id"]:
+    for key in ["signups_channel_id", "updates_channel_id", "admin_channel_id", "caster_channel_id"]:
         ch_id = t.get(key)
         if ch_id:
             ch = guild.get_channel(ch_id)
@@ -1085,7 +1235,7 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
     guild = interaction.guild
 
     # Delete main tournament channels
-    for key in ["signups_channel_id", "updates_channel_id", "matches_channel_id", "admin_channel_id", "bracket_channel_id"]:
+    for key in ["signups_channel_id", "updates_channel_id", "matches_channel_id", "admin_channel_id", "bracket_channel_id", "caster_channel_id"]:
         ch_id = t.get(key)
         if ch_id:
             ch = guild.get_channel(ch_id)
@@ -1335,11 +1485,12 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                 )
                 map_embed.set_footer(text="Everyone else: wait for the game link.")
 
-                await match_ch.send(
+                host_msg = await match_ch.send(
                     embed=map_embed,
                     view=view,
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
+                active_match["host_message_id"] = host_msg.id
 
         # When the series is decided, post all scoreboards together
         if winner_series_wins >= wins_needed:
@@ -1511,6 +1662,7 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
     token = body.get("token", "")
     ch_match_id = body.get("challonge_match_id")
     fmt = body.get("format", "bo1")
+    casted = body.get("casted", False)
 
     t = tournaments.get(t_id)
     if not t or t.get("admin_token") != token:
@@ -1551,7 +1703,7 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
         return web.json_response({"error": "bot not in target guild"}, status=500)
 
     try:
-        ch = await create_match(guild, t1_dict, t2_dict, t, fmt, challonge_match_id=ch_match_id)
+        ch = await create_match(guild, t1_dict, t2_dict, t, fmt, challonge_match_id=ch_match_id, casted=casted)
         return web.json_response({"ok": True, "channel": ch.name})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -1755,6 +1907,11 @@ BRACKET_HTML = """<!DOCTYPE html>
       <button class="fmt-btn" data-fmt="bo1">BO1</button>
       <button class="fmt-btn" data-fmt="bo3">BO3</button>
       <button class="fmt-btn" data-fmt="bo5">BO5</button>
+    </div>
+    <p style="margin-top:12px;margin-bottom:4px;font-weight:600;">Casted?</p>
+    <div class="fmt-buttons">
+      <button class="cast-btn" data-cast="false">No</button>
+      <button class="cast-btn" data-cast="true">Yes</button>
     </div>
     <button class="start-btn" id="modal-start" disabled>Start Match</button><br>
     <button class="cancel-btn" id="modal-cancel">Cancel</button>
@@ -1975,12 +2132,21 @@ function renderGrandFinals(container, matches) {
   container.appendChild(roundDiv);
 }
 
+let selectedCasted = false;
+
+function updateStartButton() {
+  document.getElementById("modal-start").disabled = !selectedFmt;
+}
+
 function openModal(m) {
   selectedMatchId = m.id;
   selectedFmt = null;
+  selectedCasted = false;
   document.getElementById("modal-match-label").textContent = (m.player1 || "TBD") + " vs " + (m.player2 || "TBD");
-  document.getElementById("modal-start").disabled = true;
+  updateStartButton();
   document.querySelectorAll(".fmt-btn").forEach(b => b.classList.remove("selected"));
+  document.querySelectorAll(".cast-btn").forEach(b => b.classList.remove("selected"));
+  document.querySelector('.cast-btn[data-cast="false"]').classList.add("selected");
   document.getElementById("modal").classList.add("active");
 }
 
@@ -1989,7 +2155,15 @@ document.querySelectorAll(".fmt-btn").forEach(btn => {
     selectedFmt = btn.dataset.fmt;
     document.querySelectorAll(".fmt-btn").forEach(b => b.classList.remove("selected"));
     btn.classList.add("selected");
-    document.getElementById("modal-start").disabled = false;
+    updateStartButton();
+  });
+});
+
+document.querySelectorAll(".cast-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    selectedCasted = btn.dataset.cast === "true";
+    document.querySelectorAll(".cast-btn").forEach(b => b.classList.remove("selected"));
+    btn.classList.add("selected");
   });
 });
 
@@ -2011,6 +2185,7 @@ document.getElementById("modal-start").addEventListener("click", async () => {
         token: TOKEN,
         challonge_match_id: selectedMatchId,
         format: selectedFmt,
+        casted: selectedCasted,
       }),
     });
     const data = await resp.json();
@@ -2328,8 +2503,10 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
     try:
         updates_channel = await guild.create_text_channel(name="tournament-updates", overwrites=read_only, category=t_cat)
         admin_channel = await guild.create_text_channel(name="tournament-admin", overwrites=admin_perms, category=a_cat)
+        caster_channel = await guild.create_text_channel(name="caster-links", overwrites=admin_perms, category=a_cat)
         t["updates_channel_id"] = updates_channel.id
         t["admin_channel_id"] = admin_channel.id
+        t["caster_channel_id"] = caster_channel.id
         save_tournaments()
     except Exception as e:
         return web.json_response({"error": f"channel creation failed: {e}"}, status=500)
@@ -2948,12 +3125,16 @@ class MapActionButton(discord.ui.Button):
         if next_step is None:
             match["current_map_index"] = 0
 
-        view = PickBanView(match_id=self.match_id)
-        view.rebuild()
-        embed = build_pickban_embed(match)
-        await interaction.response.edit_message(embed=embed, view=view)
+        if next_step is not None:
+            view = PickBanView(match_id=self.match_id)
+            view.rebuild()
+            embed = build_pickban_embed(match)
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            # Pick/ban done — remove buttons from the pinned message
+            embed = build_pickban_embed(match)
+            await interaction.response.edit_message(embed=embed, view=None)
 
-        if next_step is None:
             decider = match["remaining_maps"][0] if match["remaining_maps"] else None
             all_maps = match["picked_maps"] + ([decider] if decider else [])
             maps_str = "\n".join(f"{i+1}. {m}" for i, m in enumerate(all_maps))
@@ -2977,7 +3158,13 @@ class MapActionButton(discord.ui.Button):
 
             host_view = PickBanView(match_id=self.match_id)
             host_view.rebuild()
-            await interaction.channel.send(embed=host_embed, view=host_view)
+            host_msg = await interaction.channel.send(
+                f"<@{host_captain_id}>",
+                embed=host_embed,
+                view=host_view,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+            match["host_message_id"] = host_msg.id
 
 
 RAILWAY_BASE = "https://tourney-bot-production.up.railway.app"
@@ -3051,11 +3238,12 @@ class HostMapButton(discord.ui.Button):
 
         match["current_map_index"] = self.map_index + 1
         match["host_button_used"] = True
+        match.pop("host_message_id", None)
 
         # Visible status message so everyone knows hosting is in progress
         await interaction.channel.send(
             embed=discord.Embed(
-                description=f"⏳ <@{interaction.user.id}> is hosting **Map {self.map_index + 1}: {self.map_name}**...\nWaiting for the game link.",
+                description=f"<@{interaction.user.id}> is hosting **Map {self.map_index + 1}: {self.map_name}**...\nWaiting for the game link.",
                 color=0x2B2D31,
             )
         )
@@ -3065,7 +3253,7 @@ class HostMapButton(discord.ui.Button):
 
 
 # ── Match creation helper ─────────────────────────────────────────────────────
-async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, found_tournament: dict, fmt: str, challonge_match_id: int = None) -> discord.TextChannel:
+async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, found_tournament: dict, fmt: str, challonge_match_id: int = None, casted: bool = False) -> discord.TextChannel:
     """Create a match channel and start pick/ban. Returns the created channel."""
     t1_captain_id = found_t1["players"][0]["discord_id"]
     t2_captain_id = found_t2["players"][0]["discord_id"]
@@ -3125,6 +3313,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
         "challonge_id": found_tournament.get("challonge_id"),
         "challonge_participant_map": found_tournament.get("challonge_participant_map", {}),
         "series_score": {},  # {team_name_lower: maps_won}
+        "casted": casted,
     }
     active_matches[match_id] = match
 
@@ -3142,6 +3331,31 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     await pb_msg.pin()
     match["pickban_message_id"] = pb_msg.id
     return channel
+
+
+# ── /cast command ─────────────────────────────────────────────────────────────
+@bot.tree.command(
+    name="cast",
+    description="Toggle casting mode for the match in this channel.",
+    guild=discord.Object(id=SERVER_ID),
+)
+@is_authorized()
+async def cast_cmd(interaction: discord.Interaction):
+    match = next(
+        (m for m in active_matches.values() if m.get("channel_id") == interaction.channel.id),
+        None,
+    )
+    if not match:
+        await interaction.response.send_message("No active match in this channel.", ephemeral=True)
+        return
+
+    match["casted"] = not match.get("casted", False)
+    state = "**ON** 🎥" if match["casted"] else "**OFF**"
+    await interaction.response.send_message(
+        f"Casting mode is now {state} for this match.\n"
+        + ("Game links will be sent to the caster channel first." if match["casted"] else "Game links will go directly to players."),
+        ephemeral=True,
+    )
 
 
 # ── /bracket command ──────────────────────────────────────────────────────────
@@ -3180,15 +3394,29 @@ async def bracket_cmd(interaction: discord.Interaction, tournament_id: str):
     guild=discord.Object(id=SERVER_ID),
 )
 @is_authorized()
-@app_commands.describe(format="Match format (default: bo1)")
-@app_commands.choices(format=[
-    app_commands.Choice(name="Best of 1", value="bo1"),
-    app_commands.Choice(name="Best of 3", value="bo3"),
-    app_commands.Choice(name="Best of 5", value="bo5"),
-])
-async def test_match_cmd(interaction: discord.Interaction, format: app_commands.Choice[str] = None):
+@app_commands.describe(
+    format="Match format (default: bo1)",
+    casted="Whether this match is casted (default: No)",
+)
+@app_commands.choices(
+    format=[
+        app_commands.Choice(name="Best of 1", value="bo1"),
+        app_commands.Choice(name="Best of 3", value="bo3"),
+        app_commands.Choice(name="Best of 5", value="bo5"),
+    ],
+    casted=[
+        app_commands.Choice(name="No", value="no"),
+        app_commands.Choice(name="Yes", value="yes"),
+    ],
+)
+async def test_match_cmd(
+    interaction: discord.Interaction,
+    format: app_commands.Choice[str] = None,
+    casted: app_commands.Choice[str] = None,
+):
     """Creates a test match channel with two fake teams and full pick/ban."""
     fmt = format.value if format else "bo1"
+    is_casted = casted.value == "yes" if casted else False
     user_id = interaction.user.id
     guild = interaction.guild
     match_id = f"test-{str(uuid.uuid4())[:6]}"
@@ -3213,6 +3441,24 @@ async def test_match_cmd(interaction: discord.Interaction, format: app_commands.
         category=match_cat,
     )
 
+    # Create a caster-links channel for testing if casted
+    caster_channel_id = None
+    if is_casted:
+        caster_ch = discord.utils.get(guild.text_channels, name="test-caster-links")
+        if not caster_ch:
+            caster_ch = await guild.create_text_channel(
+                name="test-caster-links",
+                overwrites=overwrites,
+                category=match_cat,
+            )
+        caster_channel_id = caster_ch.id
+        # Store in a fake tournament so the caster flow can find it
+        tournaments["TEST"] = {
+            "id": "TEST",
+            "name": "Test Tournament",
+            "caster_channel_id": caster_channel_id,
+        }
+
     match = {
         "match_id": match_id,
         "format": fmt,
@@ -3232,6 +3478,7 @@ async def test_match_cmd(interaction: discord.Interaction, format: app_commands.
         "challonge_id": None,
         "challonge_participant_map": {},
         "series_score": {},
+        "casted": is_casted,
     }
     active_matches[match_id] = match
 
@@ -3249,9 +3496,10 @@ async def test_match_cmd(interaction: discord.Interaction, format: app_commands.
     await pb_msg.pin()
     match["pickban_message_id"] = pb_msg.id
 
+    casted_label = " | 🎥 **Casted**" if is_casted else ""
     await interaction.response.send_message(
         f"Test match created → {channel.mention}\n"
-        f"Format: **{fmt.upper()}** | You are captain of both teams.",
+        f"Format: **{fmt.upper()}**{casted_label} | You are captain of both teams.",
         ephemeral=True,
     )
 
@@ -3274,6 +3522,16 @@ async def test_match_cleanup_cmd(interaction: discord.Interaction):
             await ch.delete()
             deleted_channels += 1
         del active_matches[mid]
+
+    # Clean up test caster channel
+    caster_ch = discord.utils.get(interaction.guild.text_channels, name="test-caster-links")
+    if caster_ch:
+        await caster_ch.delete()
+        deleted_channels += 1
+
+    # Clean up fake tournament
+    tournaments.pop("TEST", None)
+
     await interaction.response.send_message(
         f"Removed {len(removed)} test match(es) and {deleted_channels} channel(s)." if removed else "No test matches found.",
         ephemeral=True,
