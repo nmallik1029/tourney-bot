@@ -88,8 +88,8 @@ def save_config(data: dict):
 
 tournaments: dict[str, dict] = load_tournaments()
 
-ROLE_ID = 1492368556627591248  # Role required for bot commands and staff channel access
-SERVER_ID = 1481881771736956938
+ROLE_ID = int(os.environ.get("ROLE_ID", 1492368556627591248))  # Role required for bot commands and staff channel access
+SERVER_ID = int(os.environ.get("SERVER_ID", 1481881771736956938))
 
 
 # ── Global command permission check ──────────────────────────────────────────
@@ -750,6 +750,17 @@ async def on_message(message: discord.Message):
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
                 return
+
+            # Reject links not launched through the host button
+            if not match_for_channel.get("host_button_used"):
+                await message.delete()
+                await message.channel.send(
+                    "**Use the host button above to host your match!** "
+                    "Manually hosted games won't be tracked by the bot.",
+                )
+                return
+
+            match_for_channel["host_button_used"] = False
 
             # Valid NY link — ping all participants
             team1 = match_for_channel["teams"][0]
@@ -2989,6 +3000,7 @@ class HostMapButton(discord.ui.Button):
         )
 
         match["current_map_index"] = self.map_index + 1
+        match["host_button_used"] = True
         view2 = PickBanView(match_id=self.match_id)
         view2.rebuild()
         await interaction.message.edit(view=view2)
@@ -3098,6 +3110,75 @@ async def bracket_cmd(interaction: discord.Interaction, tournament_id: str):
         f"**Admin Bracket Panel:** {admin_url}\n"
         f"**Challonge:** {t.get('challonge_url', 'N/A')}\n\n"
         f"Click matches on the admin panel to start them.",
+        ephemeral=True,
+    )
+
+
+# ── Test command for simulating a match ───────────────────────────────────────
+@bot.tree.command(
+    name="test-match",
+    description="Simulate an active match in this channel for testing.",
+    guild=discord.Object(id=SERVER_ID),
+)
+@is_authorized()
+async def test_match_cmd(interaction: discord.Interaction):
+    """Creates a fake active match so you can test link handling / host flow."""
+    match_id = f"test-{str(uuid.uuid4())[:6]}"
+    user_id = interaction.user.id
+
+    match = {
+        "match_id": match_id,
+        "format": "bo1",
+        "team_size": 4,
+        "teams": [
+            {"name": "TestTeam1", "captain_id": user_id, "player_ids": [user_id]},
+            {"name": "TestTeam2", "captain_id": user_id, "player_ids": [user_id]},
+        ],
+        "remaining_maps": ["Burg"],
+        "picked_maps": [],
+        "all_maps": ["Burg"],
+        "step": 0,
+        "current_map_index": 0,
+        "channel_id": interaction.channel.id,
+        "tournament_id": "TEST",
+        "updates_channel_id": interaction.channel.id,
+        "challonge_match_id": None,
+        "challonge_id": None,
+        "challonge_participant_map": {},
+        "series_score": {},
+        "host_captain_id": user_id,
+    }
+    active_matches[match_id] = match
+
+    view = PickBanView(match_id=match_id)
+    # Skip pick/ban — go straight to host buttons
+    match["picked_maps"] = ["Burg"]
+    match["remaining_maps"] = []
+    view.rebuild()
+
+    await interaction.response.send_message(
+        f"**Test match created** (`{match_id}`)\n"
+        f"You are the host captain. Try posting a krunker link — it should be rejected.\n"
+        f"Click the host button first, then post a link — it should be accepted.",
+        view=view,
+    )
+
+
+@bot.tree.command(
+    name="test-match-cleanup",
+    description="Remove all test matches from this channel.",
+    guild=discord.Object(id=SERVER_ID),
+)
+@is_authorized()
+async def test_match_cleanup_cmd(interaction: discord.Interaction):
+    removed = [
+        mid for mid, m in active_matches.items()
+        if m.get("channel_id") == interaction.channel.id and mid.startswith("test-")
+    ]
+    for mid in removed:
+        del active_matches[mid]
+    await interaction.response.send_message(
+        f"Removed {len(removed)} test match(es)." if removed else "No test matches in this channel.",
         ephemeral=True,
     )
 
