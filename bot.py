@@ -735,6 +735,11 @@ async def on_message(message: discord.Message):
             host_id = match_for_channel["host_captain_id"]
             if message.author.id != host_id:
                 await message.delete()
+                await message.channel.send(
+                    f"<@{message.author.id}> Only the host can post game links. Sit tight!",
+                    delete_after=8,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
                 return
 
             # Host captain posted a link — check it's NY region
@@ -742,11 +747,20 @@ async def on_message(message: discord.Message):
             game_code = re.search(r"\?game=(\w+):", link)
             if game_code and game_code.group(1) != "NY":
                 await message.delete()
+                embed = discord.Embed(
+                    title="Wrong Region",
+                    description=(
+                        "Your game is not on **New York** servers.\n\n"
+                        "**Fix it:**\n"
+                        "1. Set your default region to **New York** in Krunker settings\n"
+                        "2. Click the **Host** button again\n\n"
+                        "Still stuck? Ask <@723538323636748359>"
+                    ),
+                    color=0xFF4444,
+                )
                 await message.channel.send(
-                    f"**Wrong host region! Host NY!**\n\n"
-                    f"It's possible that your default region is set to Dallas or FRA. "
-                    f"Switch your default region to New York, join any New York game server, "
-                    f"and reclick the host button above. Contact <@723538323636748359> if you have any questions.",
+                    embed=embed,
+                    delete_after=30,
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
                 return
@@ -754,10 +768,15 @@ async def on_message(message: discord.Message):
             # Reject links not launched through the host button
             if not match_for_channel.get("host_button_used"):
                 await message.delete()
-                await message.channel.send(
-                    "**Use the host button above to host your match!** "
-                    "Manually hosted games won't be tracked by the bot.",
+                embed = discord.Embed(
+                    title="Use the Host Button",
+                    description=(
+                        "Don't host manually — the bot needs to set up tracking.\n\n"
+                        "**Scroll down and click the Host button**, then paste the link."
+                    ),
+                    color=0xFF4444,
                 )
+                await message.channel.send(embed=embed, delete_after=15)
                 return
 
             match_for_channel["host_button_used"] = False
@@ -772,11 +791,21 @@ async def on_message(message: discord.Message):
             all_maps = match_for_channel.get("all_maps", [])
             current_map = all_maps[map_idx] if map_idx < len(all_maps) else "Unknown"
 
+            join_embed = discord.Embed(
+                title="Step 3/3 — Join the Game",
+                description=(
+                    f"**[Click to Join]({link})**\n\n"
+                    f"**{team1['name']}** → join **Alpha** (Team 1)\n"
+                    f"**{team2['name']}** → join **Beta** (Team 2)"
+                ),
+                color=0x00FF7F,
+            )
+            join_embed.set_footer(text="Join the correct team or the match won't count.")
+
             await message.channel.send(
-                f"{link}\n\n"
-                f"**{team1['name']}** (Team 1 / higher seed) join **Alpha**.\n"
-                f"**{team2['name']}** (Team 2 / lower seed) join **Beta**.\n\n"
-                f"{all_pings}"
+                f"{all_pings}",
+                embed=join_embed,
+                allowed_mentions=discord.AllowedMentions(users=True),
             )
             return
 
@@ -1281,20 +1310,34 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         match_ch = bot.get_channel(active_match.get("channel_id"))
         if match_ch:
             if winner_series_wins >= wins_needed:
-                await match_ch.send(
-                    f"**{winner_discord['team_name']}** wins the series **{winner_series_wins}-{loser_series_wins}**! 🎉"
+                series_embed = discord.Embed(
+                    title=f"{winner_discord['team_name']} wins!",
+                    description=f"**Final Score: {winner_series_wins}-{loser_series_wins}**",
+                    color=0xFFD700,
                 )
+                series_embed.set_footer(text="GGs! This channel will be cleaned up shortly.")
+                await match_ch.send(embed=series_embed)
             else:
-                # Reply to the pick/ban message so the host can find the host button
-                pb_msg_id = active_match.get("pickban_message_id")
-                reference = discord.MessageReference(message_id=pb_msg_id, channel_id=match_ch.id) if pb_msg_id else None
+                map_num = winner_series_wins + loser_series_wins
                 host_id = active_match.get("host_captain_id")
-                host_ping = f"<@{host_id}>" if host_id else ""
+
+                # Re-send host buttons at the bottom of chat
+                view = PickBanView(match_id=active_match["match_id"])
+                view.rebuild()
+
+                map_embed = discord.Embed(
+                    title=f"{winner_discord['team_name']} takes Map {map_num}!",
+                    description=(
+                        f"**Series: {winner_series_wins}-{loser_series_wins}**\n\n"
+                        f"<@{host_id}>, host the next map using the button below."
+                    ),
+                    color=0x5865F2,
+                )
+                map_embed.set_footer(text="Everyone else: wait for the game link.")
+
                 await match_ch.send(
-                    f"**{winner_discord['team_name']}** wins this map! "
-                    f"Series: **{winner_series_wins}-{loser_series_wins}**\n\n"
-                    f"{host_ping} Host the next map! Use the host button above.",
-                    reference=reference,
+                    embed=map_embed,
+                    view=view,
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
 
@@ -2792,12 +2835,14 @@ def build_pickban_embed(match: dict) -> discord.Embed:
     if step < len(seq):
         team_idx, action = seq[step]
         current_team = match["teams"][team_idx]
+        other_team = match["teams"][1 - team_idx]
         action_str = "BAN" if action == "ban" else "PICK"
         embed.add_field(
             name="Current Turn",
-            value=f"**{current_team['name']}** — {action_str} a map",
+            value=f"**{current_team['name']}** — {action_str} a map\n*{other_team['name']}, sit tight.*",
             inline=False,
         )
+        embed.set_footer(text="Captains: use the buttons below  |  Next up: Hosting")
     else:
         decider = remaining[0] if remaining else "Unknown"
         label = "Map" if match["format"] == "bo1" else "Decider Map"
@@ -2912,26 +2957,27 @@ class MapActionButton(discord.ui.Button):
             decider = match["remaining_maps"][0] if match["remaining_maps"] else None
             all_maps = match["picked_maps"] + ([decider] if decider else [])
             maps_str = "\n".join(f"{i+1}. {m}" for i, m in enumerate(all_maps))
-            fmt = match["format"].upper()
-            summary = discord.Embed(
-                title=f"{match['teams'][0]['name']} vs {match['teams'][1]['name']}",
-                description=f"**Type: {fmt}**\n\n**Maps Selected:**\n{maps_str}",
-                color=0x00FF7F,
-            )
-            await interaction.channel.send(embed=summary)
 
-            # Randomly assign a captain to host
             # Higher seed (team index 0) always hosts
             host_captain_id = match["teams"][0]["captain_id"]
             match["host_captain_id"] = host_captain_id
             match["current_map_index"] = 0
             match["all_maps"] = all_maps
 
-            first_map = all_maps[0]
-            await interaction.channel.send(
-                f"<@{host_captain_id}> as the upper seed, you must **host**.\n"
-                f"Please host **{first_map}** on **NY** servers and post the game link here."
+            host_embed = discord.Embed(
+                title="Step 2/3 — Host the Match",
+                description=(
+                    f"**Maps:**\n{maps_str}\n\n"
+                    f"<@{host_captain_id}>, you're the host (upper seed).\n"
+                    f"**Click the button below to host Map 1.**"
+                ),
+                color=0xFFA500,
             )
+            host_embed.set_footer(text="Everyone else: hang tight until the game link is posted.")
+
+            host_view = PickBanView(match_id=self.match_id)
+            host_view.rebuild()
+            await interaction.channel.send(embed=host_embed, view=host_view)
 
 
 RAILWAY_BASE = "https://tourney-bot-production.up.railway.app"
@@ -2994,13 +3040,25 @@ class HostMapButton(discord.ui.Button):
 
         view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url)
         await interaction.response.send_message(
-            f"**Host Map: {self.map_name}** — Choose your client:",
+            f"**Hosting Map {self.map_index + 1}: {self.map_name}**\n\n"
+            f"1. Click a button below to open your client\n"
+            f"2. The game will auto-create\n"
+            f"3. Paste the Krunker link back in this channel\n\n"
+            f"Make sure your region is set to **New York**.",
             view=view,
             ephemeral=True,
         )
 
         match["current_map_index"] = self.map_index + 1
         match["host_button_used"] = True
+
+        # Visible status message so everyone knows hosting is in progress
+        await interaction.channel.send(
+            embed=discord.Embed(
+                description=f"⏳ <@{interaction.user.id}> is hosting **Map {self.map_index + 1}: {self.map_name}**...\nWaiting for the game link.",
+                color=0x2B2D31,
+            )
+        )
         view2 = PickBanView(match_id=self.match_id)
         view2.rebuild()
         await interaction.message.edit(view=view2)
@@ -3075,7 +3133,8 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     embed = build_pickban_embed(match)
 
     pb_msg = await channel.send(
-        f"<@{t1_captain_id}> <@{t2_captain_id}> — Map selection has begun!\n"
+        f"<@{t1_captain_id}> <@{t2_captain_id}>\n"
+        f"**Step 1/3 — Map Selection**\n"
         f"**{found_t1['team_name']}** (upper seed) bans first.",
         embed=embed,
         view=view,
