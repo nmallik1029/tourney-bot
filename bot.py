@@ -3137,7 +3137,7 @@ async def test_match_cmd(interaction: discord.Interaction):
         "remaining_maps": ["Burg"],
         "picked_maps": [],
         "all_maps": ["Burg"],
-        "step": 0,
+        "step": 6,
         "current_map_index": 0,
         "channel_id": interaction.channel.id,
         "tournament_id": "TEST",
@@ -3151,9 +3151,6 @@ async def test_match_cmd(interaction: discord.Interaction):
     active_matches[match_id] = match
 
     view = PickBanView(match_id=match_id)
-    # Skip pick/ban — go straight to host buttons
-    match["picked_maps"] = ["Burg"]
-    match["remaining_maps"] = []
     view.rebuild()
 
     await interaction.response.send_message(
