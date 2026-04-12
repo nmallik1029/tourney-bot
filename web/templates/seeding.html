@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seeding — Tournament Admin</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border-bottom: 1px solid #21262d; padding: 28px 32px;
+  }
+  .header h1 { font-size: 1.6rem; font-weight: 600; }
+  .header p { color: #8b949e; font-size: 0.85rem; margin-top: 4px; }
+
+  .container { max-width: 560px; margin: 0 auto; padding: 24px 32px; }
+
+  .seeding-list { display: flex; flex-direction: column; gap: 6px; }
+  .seed-item {
+    display: flex; align-items: center; gap: 12px;
+    background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+    padding: 12px 16px; cursor: grab; user-select: none;
+    transition: all 0.25s ease;
+  }
+  .seed-item:hover { border-color: #30363d; background: #1c2333; }
+  .seed-item:active { cursor: grabbing; }
+  .seed-item.dragging { opacity: 0.35; transform: scale(0.96); }
+  .seed-item.drag-over { border-color: #f09030; background: #1c2333; box-shadow: 0 0 12px rgba(240,144,48,0.1); }
+  .seed-num {
+    font-size: 1rem; font-weight: 700; color: #f09030; min-width: 28px;
+    text-align: center; background: rgba(240,144,48,0.1); border-radius: 6px;
+    padding: 2px 0;
+  }
+  .seed-name { flex: 1; font-size: 0.95rem; position: relative; font-weight: 500; }
+  .seed-handle { color: #30363d; font-size: 1.1rem; cursor: grab; transition: color 0.2s; }
+  .seed-item:hover .seed-handle { color: #484f58; }
+  .seed-roster {
+    display: none; position: absolute; left: 100%; top: 50%; transform: translateY(-50%);
+    margin-left: 14px; background: #161b22; border: 1px solid #f09030; border-radius: 8px;
+    padding: 10px 16px; white-space: nowrap; z-index: 10; font-size: 0.8rem;
+    color: #8b949e; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    animation: tooltipIn 0.15s ease;
+  }
+  @keyframes tooltipIn { from { opacity: 0; transform: translateY(-50%) translateX(-4px); } to { opacity: 1; transform: translateY(-50%) translateX(0); } }
+  .seed-roster .roster-title { color: #f09030; font-weight: 700; margin-bottom: 6px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .seed-roster .roster-player { padding: 2px 0; color: #e6edf3; }
+  .seed-name:hover .seed-roster { display: block; }
+
+  .seed-arrows { display: flex; flex-direction: column; gap: 3px; }
+  .seed-arrows button {
+    background: #0d1117; border: 1px solid #21262d; color: #484f58; width: 28px; height: 24px;
+    border-radius: 4px; cursor: pointer; font-size: 0.7rem; display: flex; align-items: center;
+    justify-content: center; transition: all 0.2s ease;
+  }
+  .seed-arrows button:hover { border-color: #f09030; color: #f09030; background: #161b22; }
+  .seed-arrows button:disabled { opacity: 0.3; cursor: default; }
+
+  .confirm-area { margin: 28px 0 0; text-align: center; }
+  .confirm-btn {
+    padding: 12px 44px; border-radius: 8px; border: none;
+    background: #3fb950; color: #fff; font-size: 1.05rem; font-weight: 700;
+    cursor: pointer; transition: all 0.25s ease;
+  }
+  .confirm-btn:hover { background: #2ea043; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(63,185,80,0.3); }
+  .confirm-btn:disabled { background: #21262d; color: #484f58; cursor: not-allowed; transform: none; box-shadow: none; }
+  .confirm-status { margin-top: 14px; color: #8b949e; font-size: 0.85rem; transition: color 0.3s; }
+  .confirm-status.error { color: #f85149; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1 id="title">Loading...</h1>
+  <p>Drag teams to reorder seeding, then confirm to create the bracket.</p>
+</div>
+<div class="container">
+
+<div class="seeding-list" id="seeding-list"></div>
+
+<div class="confirm-area">
+  <button class="confirm-btn" id="confirm-btn" disabled>Confirm &amp; Create Bracket</button>
+  <p class="confirm-status" id="confirm-status"></p>
+</div>
+
+</div>
+
+<script>
+const T_ID = "{{TOURNAMENT_ID}}";
+const TOKEN = "{{TOKEN}}";
+let teams = [];
+let dragIdx = null;
+
+async function loadTeams() {
+  const resp = await fetch(`/api/seeding/${T_ID}?token=${TOKEN}`);
+  if (!resp.ok) { document.getElementById("title").textContent = "Error loading teams"; return; }
+  const data = await resp.json();
+  document.getElementById("title").textContent = data.name + " — Seeding";
+  teams = data.teams;
+  renderList();
+  document.getElementById("confirm-btn").disabled = false;
+}
+
+function renderList() {
+  const list = document.getElementById("seeding-list");
+  list.innerHTML = "";
+  teams.forEach((t, i) => {
+    const item = document.createElement("div");
+    item.className = "seed-item";
+    item.draggable = true;
+    item.dataset.index = i;
+
+    const players = t.players || [];
+    let rosterHtml = '<div class="seed-roster"><div class="roster-title">Players</div>';
+    players.forEach(p => { rosterHtml += '<div class="roster-player">' + esc(p) + '</div>'; });
+    rosterHtml += '</div>';
+
+    item.innerHTML =
+      '<span class="seed-handle">&#9776;</span>' +
+      '<span class="seed-num">' + (i + 1) + '</span>' +
+      '<div style="flex:1"><div class="seed-name">' + esc(t.team_name) + rosterHtml + '</div></div>' +
+      '<div class="seed-arrows">' +
+        '<button data-dir="up" data-idx="' + i + '"' + (i === 0 ? ' disabled' : '') + '>&#9650;</button>' +
+        '<button data-dir="down" data-idx="' + i + '"' + (i === teams.length - 1 ? ' disabled' : '') + '>&#9660;</button>' +
+      '</div>';
+
+    // Drag events
+    item.addEventListener("dragstart", e => { dragIdx = i; item.classList.add("dragging"); });
+    item.addEventListener("dragend", () => { dragIdx = null; document.querySelectorAll(".seed-item").forEach(el => el.classList.remove("dragging", "drag-over")); });
+    item.addEventListener("dragover", e => { e.preventDefault(); item.classList.add("drag-over"); });
+    item.addEventListener("dragleave", () => item.classList.remove("drag-over"));
+    item.addEventListener("drop", e => {
+      e.preventDefault();
+      item.classList.remove("drag-over");
+      if (dragIdx !== null && dragIdx !== i) {
+        const moved = teams.splice(dragIdx, 1)[0];
+        teams.splice(i, 0, moved);
+        renderList();
+      }
+    });
+
+    // Arrow button events
+    item.querySelectorAll(".seed-arrows button").forEach(btn => {
+      btn.addEventListener("click", e => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.idx);
+        const dir = btn.dataset.dir;
+        if (dir === "up" && idx > 0) {
+          [teams[idx], teams[idx - 1]] = [teams[idx - 1], teams[idx]];
+        } else if (dir === "down" && idx < teams.length - 1) {
+          [teams[idx], teams[idx + 1]] = [teams[idx + 1], teams[idx]];
+        }
+        renderList();
+      });
+    });
+
+    list.appendChild(item);
+  });
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+document.getElementById("confirm-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("confirm-btn");
+  const status = document.getElementById("confirm-status");
+  btn.disabled = true;
+  btn.textContent = "Creating bracket...";
+  status.textContent = "Setting up channels, Challonge bracket, and participants...";
+  status.className = "confirm-status";
+
+  try {
+    const teamOrder = teams.map(t => t.team_id);
+    const resp = await fetch("/api/confirm-seeding", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ tournament_id: T_ID, token: TOKEN, team_order: teamOrder }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      status.textContent = "Bracket created! Redirecting...";
+      setTimeout(() => {
+        window.location.href = `/admin/${T_ID}?token=${TOKEN}`;
+      }, 1500);
+    } else {
+      status.textContent = "Error: " + (data.error || "Unknown error");
+      status.className = "confirm-status error";
+      btn.textContent = "Confirm & Create Bracket";
+      btn.disabled = false;
+    }
+  } catch(e) {
+    status.textContent = "Error: " + e.message;
+    status.className = "confirm-status error";
+    btn.textContent = "Confirm & Create Bracket";
+    btn.disabled = false;
+  }
+});
+
+loadTeams();
+</script>
+</body>
+</html>
