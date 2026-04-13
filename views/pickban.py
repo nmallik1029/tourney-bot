@@ -97,13 +97,14 @@ class PickBanView(discord.ui.View):
 
         step_info = get_current_step(match)
         if step_info is None:
+            current_idx = match.get("current_map_index", 0)
             for i, map_name in enumerate(match["picked_maps"]):
                 self.add_item(HostMapButton(
                     match_id=self.match_id,
                     map_index=i,
                     map_name=map_name,
                     label=f"Host Map {i+1}: {map_name}",
-                    disabled=i != match.get("current_map_index", 0),
+                    disabled=i != current_idx,
                 ))
             decider = match["remaining_maps"][0] if match["remaining_maps"] else None
             if decider:
@@ -115,8 +116,21 @@ class PickBanView(discord.ui.View):
                     map_index=total,
                     map_name=decider,
                     label=decider_label,
-                    disabled=total != match.get("current_map_index", 0),
+                    disabled=total != current_idx,
                 ))
+            # Add rehost button when a map has been hosted (something to rehost)
+            if match.get("host_captain_id") and current_idx > 0:
+                all_maps = match.get("all_maps", [])
+                # current_map_index gets incremented when host button is clicked,
+                # so the in-progress/last-played map is always current_idx - 1
+                active_idx = current_idx - 1
+                active_map = all_maps[active_idx] if active_idx < len(all_maps) else None
+                if active_map and not match.get("pending_rehost"):
+                    self.add_item(RehostRequestButton(
+                        match_id=self.match_id,
+                        map_index=active_idx,
+                        map_name=active_map,
+                    ))
             return
 
         team_idx, action = step_info
@@ -303,6 +317,224 @@ class HostMapButton(discord.ui.Button):
         view2 = PickBanView(match_id=self.match_id)
         view2.rebuild()
         await interaction.message.edit(view=view2)
+
+
+# ── Rehost system ─────────────────────────────────────────────────────────────
+class RehostRequestButton(discord.ui.Button):
+    """Red button that appears next to Host Map buttons. Either captain can request a rehost."""
+    def __init__(self, match_id, map_index, map_name):
+        super().__init__(
+            label=f"Rehost Map {map_index + 1}",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"rehost_{match_id}_{map_index}",
+        )
+        self.match_id = match_id
+        self.map_index = map_index
+        self.map_name = map_name
+
+    async def callback(self, interaction: discord.Interaction):
+        match = active_matches.get(self.match_id)
+        if not match:
+            await interaction.response.send_message("Match not found.", ephemeral=True)
+            return
+
+        # Only captains can request a rehost
+        captain_ids = [t["captain_id"] for t in match["teams"]]
+        if interaction.user.id not in captain_ids:
+            await interaction.response.send_message("Only team captains can request a rehost.", ephemeral=True)
+            return
+
+        # Check if there's already a pending rehost
+        if match.get("pending_rehost"):
+            await interaction.response.send_message("A rehost request is already pending.", ephemeral=True)
+            return
+
+        # Figure out which captain requested and which needs to approve
+        requesting_team_idx = 0 if interaction.user.id == match["teams"][0]["captain_id"] else 1
+        other_team_idx = 1 - requesting_team_idx
+        other_captain_id = match["teams"][other_team_idx]["captain_id"]
+        other_captain_name = match["teams"][other_team_idx]["name"]
+        requesting_name = interaction.user.display_name
+
+        staff_role = interaction.guild.get_role(ROLE_ID)
+        staff_mention = staff_role.mention if staff_role else "@Tournament Management"
+
+        match["pending_rehost"] = {
+            "map_index": self.map_index,
+            "map_name": self.map_name,
+            "requesting_user_id": interaction.user.id,
+            "other_captain_id": other_captain_id,
+            "captain_approved": False,
+            "management_approved": False,
+        }
+
+        embed = discord.Embed(
+            title="Rehost Requested",
+            description=(
+                f"**{requesting_name}** has requested a rehost of **Map {self.map_index + 1}: {self.map_name}**.\n\n"
+                f"Per the rules, a rehost requires a **total reset** of the map.\n\n"
+                f"We need **{other_captain_name}'s captain** and a **Tournament Manager** to approve."
+            ),
+            color=0xFF4444,
+        )
+        embed.set_footer(text="Both parties must approve for the rehost to proceed.")
+
+        view = RehostApprovalView(match_id=self.match_id)
+
+        await interaction.response.send_message(
+            f"<@{other_captain_id}> {staff_mention}",
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+
+
+class RehostApprovalView(discord.ui.View):
+    def __init__(self, match_id: str):
+        super().__init__(timeout=None)
+        self.match_id = match_id
+        # Replace placeholder buttons with match-specific custom IDs
+        for item in self.children:
+            if hasattr(item, 'custom_id'):
+                if 'approve' in (item.custom_id or ''):
+                    item.custom_id = f"rehost_approve_{match_id}"
+                elif 'deny' in (item.custom_id or ''):
+                    item.custom_id = f"rehost_deny_{match_id}"
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="rehost_approve_placeholder")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        match = active_matches.get(self.match_id)
+        if not match or not match.get("pending_rehost"):
+            await interaction.response.send_message("No pending rehost request.", ephemeral=True)
+            return
+
+        rehost = match["pending_rehost"]
+        other_captain_id = rehost["other_captain_id"]
+        user_id = interaction.user.id
+
+        # Determine who is approving
+        is_captain = user_id == other_captain_id
+        staff_role = interaction.guild.get_role(ROLE_ID)
+        is_management = (
+            interaction.user.guild_permissions.administrator
+            or (staff_role and staff_role in interaction.user.roles)
+        )
+
+        # The requesting captain can't approve their own request
+        if user_id == rehost["requesting_user_id"] and not is_management:
+            await interaction.response.send_message("You requested this rehost -- you can't approve it yourself.", ephemeral=True)
+            return
+
+        if not is_captain and not is_management:
+            await interaction.response.send_message("Only the other captain or a tournament manager can approve.", ephemeral=True)
+            return
+
+        approver_name = interaction.user.display_name
+        map_name = rehost["map_name"]
+        map_index = rehost["map_index"]
+
+        if is_captain:
+            rehost["captain_approved"] = True
+        if is_management:
+            rehost["management_approved"] = True
+
+        # Check what's still needed
+        needs_captain = not rehost["captain_approved"]
+        needs_management = not rehost["management_approved"]
+
+        if needs_captain or needs_management:
+            waiting_on = []
+            if needs_captain:
+                other_team_name = match["teams"][1 if other_captain_id == match["teams"][1]["captain_id"] else 0]["name"]
+                waiting_on.append(f"**{other_team_name}'s captain**")
+            if needs_management:
+                waiting_on.append("**Tournament Management**")
+
+            await interaction.response.send_message(
+                f"\u2705 **{approver_name}** has approved the rehost of **Map {map_index + 1}: {map_name}**.\n"
+                f"Waiting on {' and '.join(waiting_on)}."
+            )
+            return
+
+        # Both approved -- proceed with rehost
+        match.pop("pending_rehost", None)
+
+        # Reset the map index back so the host button for this map is active again
+        match["current_map_index"] = map_index
+        match["host_button_used"] = False
+        match.pop("host_message_id", None)
+
+        host_captain_id = match["host_captain_id"]
+        all_maps = match.get("all_maps", [])
+        current_map = all_maps[map_index] if map_index < len(all_maps) else map_name
+
+        await interaction.response.send_message(
+            f"\u2705 **{approver_name}** has approved the rehost of **Map {map_index + 1}: {map_name}**.\n"
+            f"Rehost approved! Re-hosting now..."
+        )
+
+        # Send fresh host embed
+        host_embed = discord.Embed(
+            title=f"Rehost -- Map {map_index + 1}: {current_map}",
+            description=(
+                f"The rehost has been approved.\n\n"
+                f"<@{host_captain_id}>, click the button below to re-host **{current_map}**."
+            ),
+            color=0xFFA500,
+        )
+        host_embed.set_footer(text="This is a full map reset. Everyone else: hang tight.")
+
+        host_view = PickBanView(match_id=self.match_id)
+        host_view.rebuild()
+
+        host_msg = await interaction.channel.send(
+            f"<@{host_captain_id}>",
+            embed=host_embed,
+            view=host_view,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        match["host_message_id"] = host_msg.id
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="rehost_deny_placeholder")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        match = active_matches.get(self.match_id)
+        if not match or not match.get("pending_rehost"):
+            await interaction.response.send_message("No pending rehost request.", ephemeral=True)
+            return
+
+        rehost = match["pending_rehost"]
+        other_captain_id = rehost["other_captain_id"]
+        user_id = interaction.user.id
+
+        is_captain = user_id == other_captain_id
+        staff_role = interaction.guild.get_role(ROLE_ID)
+        is_management = (
+            interaction.user.guild_permissions.administrator
+            or (staff_role and staff_role in interaction.user.roles)
+        )
+
+        if user_id == rehost["requesting_user_id"] and not is_management:
+            await interaction.response.send_message("You requested this rehost -- you can't deny your own request.", ephemeral=True)
+            return
+
+        if not is_captain and not is_management:
+            await interaction.response.send_message("Only the other captain or a tournament manager can deny.", ephemeral=True)
+            return
+
+        denier_name = interaction.user.display_name
+        map_name = rehost["map_name"]
+        map_index = rehost["map_index"]
+
+        staff_mention = staff_role.mention if staff_role else "@Tournament Management"
+
+        match.pop("pending_rehost", None)
+
+        await interaction.response.send_message(
+            f"\u274c **{denier_name}** has denied the rehost of **Map {map_index + 1}: {map_name}**.\n"
+            f"Ping {staff_mention} if you need help resolving this.",
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
+
 
 
 # ── Match creation helper ─────────────────────────────────────────────────────
