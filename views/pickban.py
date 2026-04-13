@@ -379,7 +379,10 @@ class RehostRequestButton(discord.ui.Button):
         )
         embed.set_footer(text="Both parties must approve for the rehost to proceed.")
 
-        view = RehostApprovalView(match_id=self.match_id)
+        view = RehostApprovalView(
+            match_id=self.match_id,
+            other_captain_name=other_captain_name,
+        )
 
         await interaction.response.send_message(
             f"<@{other_captain_id}> {staff_mention}",
@@ -390,19 +393,35 @@ class RehostRequestButton(discord.ui.Button):
 
 
 class RehostApprovalView(discord.ui.View):
-    def __init__(self, match_id: str):
+    def __init__(self, match_id: str, other_captain_name: str = "Captain"):
         super().__init__(timeout=None)
         self.match_id = match_id
-        # Replace placeholder buttons with match-specific custom IDs
-        for item in self.children:
-            if hasattr(item, 'custom_id'):
-                if 'approve' in (item.custom_id or ''):
-                    item.custom_id = f"rehost_approve_{match_id}"
-                elif 'deny' in (item.custom_id or ''):
-                    item.custom_id = f"rehost_deny_{match_id}"
+        self.add_item(RehostApproveButton(
+            match_id=match_id,
+            role="captain",
+            label=f"{other_captain_name} - Approve",
+            style=discord.ButtonStyle.success,
+        ))
+        self.add_item(RehostApproveButton(
+            match_id=match_id,
+            role="management",
+            label="Management - Approve",
+            style=discord.ButtonStyle.success,
+        ))
+        self.add_item(RehostDenyButton(match_id=match_id))
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, custom_id="rehost_approve_placeholder")
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class RehostApproveButton(discord.ui.Button):
+    def __init__(self, match_id: str, role: str, label: str, style):
+        super().__init__(
+            label=label,
+            style=style,
+            custom_id=f"rehost_{role}_{match_id}",
+        )
+        self.match_id = match_id
+        self.role = role  # "captain" or "management"
+
+    async def callback(self, interaction: discord.Interaction):
         match = active_matches.get(self.match_id)
         if not match or not match.get("pending_rehost"):
             await interaction.response.send_message("No pending rehost request.", ephemeral=True)
@@ -412,31 +431,32 @@ class RehostApprovalView(discord.ui.View):
         other_captain_id = rehost["other_captain_id"]
         user_id = interaction.user.id
 
-        # Determine who is approving
-        is_captain = user_id == other_captain_id
         staff_role = interaction.guild.get_role(ROLE_ID)
         is_management = (
             interaction.user.guild_permissions.administrator
             or (staff_role and staff_role in interaction.user.roles)
         )
 
-        # The requesting captain can't approve their own request
-        if user_id == rehost["requesting_user_id"] and not is_management:
-            await interaction.response.send_message("You requested this rehost -- you can't approve it yourself.", ephemeral=True)
-            return
-
-        if not is_captain and not is_management:
-            await interaction.response.send_message("Only the other captain or a tournament manager can approve.", ephemeral=True)
-            return
+        # Validate who's clicking which button
+        if self.role == "captain":
+            if user_id != other_captain_id:
+                await interaction.response.send_message("Only the other team's captain can use this button.", ephemeral=True)
+                return
+            rehost["captain_approved"] = True
+        elif self.role == "management":
+            if not is_management:
+                await interaction.response.send_message("Only tournament managers or admins can use this button.", ephemeral=True)
+                return
+            rehost["management_approved"] = True
 
         approver_name = interaction.user.display_name
         map_name = rehost["map_name"]
         map_index = rehost["map_index"]
 
-        if is_captain:
-            rehost["captain_approved"] = True
-        if is_management:
-            rehost["management_approved"] = True
+        # Disable the button that was just clicked
+        self.disabled = True
+        self.label = f"\u2705 {approver_name}"
+        self.style = discord.ButtonStyle.secondary
 
         # Check what's still needed
         needs_captain = not rehost["captain_approved"]
@@ -448,15 +468,21 @@ class RehostApprovalView(discord.ui.View):
                 other_team_name = match["teams"][1 if other_captain_id == match["teams"][1]["captain_id"] else 0]["name"]
                 waiting_on.append(f"**{other_team_name}'s captain**")
             if needs_management:
-                waiting_on.append("**Tournament Management**")
+                waiting_on.append("**Management**")
 
-            await interaction.response.send_message(
+            await interaction.response.edit_message(view=self.view)
+            await interaction.followup.send(
                 f"\u2705 **{approver_name}** has approved the rehost of **Map {map_index + 1}: {map_name}**.\n"
                 f"Waiting on {' and '.join(waiting_on)}."
             )
             return
 
-        # Both approved -- proceed with rehost
+        # Both approved -- disable all buttons on the approval message
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self.view)
+
+        # Clear pending rehost
         match.pop("pending_rehost", None)
 
         # Reset the map index back so the host button for this map is active again
@@ -468,7 +494,7 @@ class RehostApprovalView(discord.ui.View):
         all_maps = match.get("all_maps", [])
         current_map = all_maps[map_index] if map_index < len(all_maps) else map_name
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"\u2705 **{approver_name}** has approved the rehost of **Map {map_index + 1}: {map_name}**.\n"
             f"Rehost approved! Re-hosting now..."
         )
@@ -495,8 +521,17 @@ class RehostApprovalView(discord.ui.View):
         )
         match["host_message_id"] = host_msg.id
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, custom_id="rehost_deny_placeholder")
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class RehostDenyButton(discord.ui.Button):
+    def __init__(self, match_id: str):
+        super().__init__(
+            label="Deny",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"rehost_deny_{match_id}",
+        )
+        self.match_id = match_id
+
+    async def callback(self, interaction: discord.Interaction):
         match = active_matches.get(self.match_id)
         if not match or not match.get("pending_rehost"):
             await interaction.response.send_message("No pending rehost request.", ephemeral=True)
@@ -529,7 +564,12 @@ class RehostApprovalView(discord.ui.View):
 
         match.pop("pending_rehost", None)
 
-        await interaction.response.send_message(
+        # Disable all buttons
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self.view)
+
+        await interaction.followup.send(
             f"\u274c **{denier_name}** has denied the rehost of **Map {map_index + 1}: {map_name}**.\n"
             f"Ping {staff_mention} if you need help resolving this.",
             allowed_mentions=discord.AllowedMentions(roles=True),
