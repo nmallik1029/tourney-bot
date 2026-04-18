@@ -1,5 +1,6 @@
 # Krunker Bi-Weekly Tournament Bot
 Coded by: xWater
+
 Managed by: Leshawn, Mucnutty, Klap, Araf, Lvpez, Lunarz, Weed, xWater
 ---
 
