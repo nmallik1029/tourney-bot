@@ -76,7 +76,10 @@ async def on_message(message: discord.Message):
             all_pings = " ".join(
                 f"<@{pid}>" for pid in team1.get("player_ids", []) + team2.get("player_ids", [])
             )
-            map_idx = match_for_channel.get("current_map_index", 0)
+            # The host button increments current_map_index AFTER hosting, so the map
+            # actually being played is one less than the stored value.
+            next_map_idx = match_for_channel.get("current_map_index", 0)
+            map_idx = max(0, next_map_idx - 1)
             all_maps = match_for_channel.get("all_maps", [])
             current_map = all_maps[map_idx] if map_idx < len(all_maps) else "Unknown"
 
@@ -115,7 +118,7 @@ async def on_message(message: discord.Message):
 
                 # Tell the match channel to wait
                 wait_embed = discord.Embed(
-                    title="\U0001f3a5 This match is being casted!",
+                    title="This match is being casted!",
                     description="The link has been sent to the casting team.\nPlease wait for the link to be released.",
                     color=0xFFA500,
                 )

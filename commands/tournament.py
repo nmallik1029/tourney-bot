@@ -541,8 +541,8 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
         except Exception:
             pass
 
-    # Delete tournament channels
-    for key in ["signups_channel_id", "updates_channel_id", "admin_channel_id", "caster_channel_id"]:
+    # Delete tournament channels (but archive tournament-updates for history)
+    for key in ["signups_channel_id", "admin_channel_id", "caster_channel_id"]:
         ch_id = t.get(key)
         if ch_id:
             ch = guild.get_channel(ch_id)
@@ -551,6 +551,43 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
                     await ch.delete()
                 except Exception:
                     pass
+
+    # Archive the tournament-updates channel: rename + make read-only + move out of
+    # the tournament category so it survives cleanup. Scoreboard images remain accessible.
+    updates_ch_id = t.get("updates_channel_id")
+    if updates_ch_id:
+        updates_ch = guild.get_channel(updates_ch_id)
+        if updates_ch:
+            try:
+                # Find or create a top-level "Tournament Archive" category
+                archive_cat = discord.utils.get(guild.categories, name="Tournament Archive")
+                if not archive_cat:
+                    archive_cat = await guild.create_category("Tournament Archive")
+
+                # Build read-only overwrites: hidden from everyone, staff can view, nobody sends.
+                staff_role = guild.get_role(ROLE_ID)
+                archive_overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    guild.me: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, manage_channels=True,
+                    ),
+                }
+                if staff_role:
+                    archive_overwrites[staff_role] = discord.PermissionOverwrite(
+                        view_channel=True, send_messages=False, read_message_history=True, add_reactions=False,
+                    )
+
+                archive_name = f"results-{t.get('name', t_id).lower().replace(' ', '-')[:80]}"
+
+                await updates_ch.edit(
+                    name=archive_name,
+                    category=archive_cat,
+                    overwrites=archive_overwrites,
+                    topic=f"Archived results from {t.get('name', t_id)}",
+                )
+                print(f"[Archive] Moved tournament-updates to #{archive_name} under 'Tournament Archive'.")
+            except Exception as e:
+                print(f"[Archive] Failed to archive updates channel: {e}")
 
     # Delete per-team channels, categories, and roles (SKIP top 2 teams that need VODs)
     for team_id, ch_ids in t.get("team_channels", {}).items():
@@ -595,7 +632,7 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     t["open"] = False
     t["ended"] = True
     t.pop("signups_channel_id", None)
-    t.pop("updates_channel_id", None)
+    # Keep updates_channel_id so the archived results channel is reachable via the dashboard
     t.pop("admin_channel_id", None)
 
     # Only remove channel/category/role data for non-VOD teams
