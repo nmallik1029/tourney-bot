@@ -234,6 +234,91 @@ async def tournament_info(interaction: discord.Interaction):
     await interaction.response.send_message(f"**Tournament Dashboard:**\n{url}", ephemeral=True)
 
 
+# ── /tournament-edit ──────────────────────────────────────────────────────────
+@bot.tree.command(name="tournament-edit", description="Edit tournament name, prize pool, or date.", guild=guild_object())
+@is_authorized()
+@app_commands.describe(
+    tournament_id="The tournament ID",
+    name="New tournament name (leave blank to keep current)",
+    prizes="New prize pool, e.g. '420 / 210 / 70' (leave blank to keep current)",
+    date="New date, Discord timestamp format e.g. <t:1743188400:F> (leave blank to keep current)",
+)
+async def tournament_edit(
+    interaction: discord.Interaction,
+    tournament_id: str,
+    name: str | None = None,
+    prizes: str | None = None,
+    date: str | None = None,
+):
+    t_id = tournament_id.upper()
+    if t_id not in tournaments:
+        await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
+        return
+
+    t = tournaments[t_id]
+    if interaction.user.id != t["organizer_id"] and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Only the organizer or an admin can edit this tournament.", ephemeral=True)
+        return
+
+    if not any([name, prizes, date]):
+        await interaction.response.send_message(
+            "Nothing to update — provide at least one of `name`, `prizes`, or `date`.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    changes = []
+
+    if name:
+        old = t.get("name")
+        new = name.strip()
+        t["name"] = new
+        changes.append(f"Name: **{old}** → **{new}**")
+
+    if prizes:
+        raw = prizes.strip()
+        prize_parts = [p.strip().lstrip("$") for p in raw.split("/")]
+        prize_display = " / ".join(f"${p}" for p in prize_parts)
+        old = t.get("prizes", "N/A")
+        t["prizes"] = prize_display
+        changes.append(f"Prizes: **{old}** → **{prize_display}**")
+
+    if date:
+        old = t.get("date", "N/A")
+        t["date"] = date.strip()
+        changes.append(f"Date: **{old}** → **{date.strip()}**")
+
+    save_tournaments()
+
+    # If signup button is still live, update its embed to reflect changes
+    from views.registration import SignupView
+    signups_ch_id = t.get("signups_channel_id")
+    btn_msg_id = t.get("signup_button_message_id")
+    if signups_ch_id and btn_msg_id:
+        signups_ch = interaction.guild.get_channel(signups_ch_id)
+        if signups_ch:
+            try:
+                btn_msg = await signups_ch.fetch_message(btn_msg_id)
+                new_embed = discord.Embed(
+                    title=f"{t['name']}  --  Registration",
+                    description=f"Click the button below to register for the **{t['name']}**!",
+                    color=0x00FF7F,
+                )
+                new_embed.add_field(name="Prizes", value=t.get("prizes", "N/A"), inline=True)
+                new_embed.add_field(name="Format", value=t.get("format", "N/A").upper(), inline=True)
+                new_embed.add_field(name="Date", value=t.get("date", "N/A"), inline=True)
+                new_embed.set_footer(text=f"Tournament ID: {t_id}")
+                await btn_msg.edit(embed=new_embed, view=SignupView(tournament_id=t_id))
+            except Exception as e:
+                print(f"[Edit] Failed to update signup button embed: {e}")
+
+    await interaction.followup.send(
+        f"**Tournament `{t_id}` updated:**\n" + "\n".join(changes),
+        ephemeral=True,
+    )
+
+
 # ── /tournament-remove-team ───────────────────────────────────────────────────
 @bot.tree.command(name="tournament-remove-team", description="Remove a team from a tournament.", guild=guild_object())
 @is_authorized()
