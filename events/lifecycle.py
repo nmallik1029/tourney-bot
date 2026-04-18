@@ -20,11 +20,13 @@ async def on_app_command_error(interaction: discord.Interaction, error):
 async def on_ready():
     guild = discord.Object(id=SERVER_ID)
     try:
+        # One persistent EditRosterView handles every team embed -- the button
+        # callback resolves the correct team by looking up the clicked message's ID.
+        bot.add_view(EditRosterView())
+
         for t_id, t in tournaments.items():
             if t.get("open"):
                 bot.add_view(SignupView(tournament_id=t_id))
-            for team in t.get("teams", []):
-                bot.add_view(EditRosterView(team_id=team["team_id"], tournament_id=t_id))
 
             # Re-register VOD submission views for teams awaiting VODs
             for team_id, vod_info in t.get("vod_teams", {}).items():

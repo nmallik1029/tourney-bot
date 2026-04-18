@@ -317,43 +317,66 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
             save_tournaments()
 
 
+def _find_team_by_message(message_id: int):
+    """Look up (tournament_id, tournament, team) by the signup embed message ID.
+
+    Persistent views in discord.py route by custom_id only, so self.team_id on
+    the EditRosterView is unreliable when multiple team embeds share the same
+    button. Looking up by message_id makes every button self-identify correctly.
+    """
+    if not message_id:
+        return None, None, None
+    for tid, t in tournaments.items():
+        for team in t.get("teams", []):
+            if team.get("signup_message_id") == message_id:
+                return tid, t, team
+    return None, None, None
+
+
 class EditRosterView(discord.ui.View):
-    def __init__(self, team_id: str, tournament_id: str):
+    def __init__(self, team_id: str = "", tournament_id: str = ""):
         super().__init__(timeout=None)
+        # team_id/tournament_id are kept for backward compat but not trusted --
+        # callbacks always resolve them from the clicked message's ID.
         self.team_id = team_id
         self.tournament_id = tournament_id
 
-    async def _validate(self, interaction: discord.Interaction):
-        """Returns (tournament, team) if the user can edit, else None after sending a response."""
-        t = tournaments.get(self.tournament_id)
-        if not t:
-            await interaction.response.send_message("Tournament not found.", ephemeral=True)
-            return None, None
-
-        team = next((tm for tm in t["teams"] if tm["team_id"] == self.team_id), None)
-        if not team:
-            await interaction.response.send_message("Team not found.", ephemeral=True)
-            return None, None
+    async def _resolve(self, interaction: discord.Interaction):
+        """Resolve the real tournament + team from the message the button is on."""
+        message_id = interaction.message.id if interaction.message else None
+        tid, t, team = _find_team_by_message(message_id)
+        if not t or not team:
+            await interaction.response.send_message(
+                "This team's signup record couldn't be located. It may have been removed.",
+                ephemeral=True,
+            )
+            return None, None, None
 
         if interaction.user.id != team["submitted_by"]:
-            await interaction.response.send_message("Only the person who registered this team can edit it.", ephemeral=True)
-            return None, None
+            await interaction.response.send_message(
+                "Only the person who registered this team can edit it.",
+                ephemeral=True,
+            )
+            return None, None, None
 
-        if not t["open"]:
-            await interaction.response.send_message("Sign-ups are closed. The roster can no longer be edited.", ephemeral=True)
-            return None, None
+        if not t.get("open"):
+            await interaction.response.send_message(
+                "Sign-ups are closed. The roster can no longer be edited.",
+                ephemeral=True,
+            )
+            return None, None, None
 
-        return t, team
+        return tid, t, team
 
     @discord.ui.button(label="Edit Roster", style=discord.ButtonStyle.primary, custom_id="edit_roster_btn")
     async def edit_roster(self, interaction: discord.Interaction, button: discord.ui.Button):
-        t, team = await self._validate(interaction)
+        tid, t, team = await self._resolve(interaction)
         if not t:
             return
 
         view = EditPlayerSelectView(
-            tournament_id=self.tournament_id,
-            team_id=self.team_id,
+            tournament_id=tid,
+            team_id=team["team_id"],
             team_size=t["team_size"],
         )
         player_labels = ["Captain"] + [f"Player {i}" for i in range(2, t["team_size"] + 1)]
@@ -367,13 +390,13 @@ class EditRosterView(discord.ui.View):
 
     @discord.ui.button(label="Manage Coach/Subs", style=discord.ButtonStyle.secondary, custom_id="manage_coach_subs_btn")
     async def manage_coach_subs(self, interaction: discord.Interaction, button: discord.ui.Button):
-        t, team = await self._validate(interaction)
+        tid, t, team = await self._resolve(interaction)
         if not t:
             return
 
         view = ManageCoachSubsView(
-            tournament_id=self.tournament_id,
-            team_id=self.team_id,
+            tournament_id=tid,
+            team_id=team["team_id"],
         )
 
         current_lines = []
