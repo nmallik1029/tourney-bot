@@ -11,6 +11,7 @@ from web.handlers import (
     handle_api_confirm_seeding,
     handle_dashboard,
     handle_api_dashboard,
+    handle_match_history,
 )
 
 
@@ -26,6 +27,7 @@ async def start_webhook_server():
     app.router.add_post("/api/start-match", handle_api_start_match)
     app.router.add_get("/dashboard", handle_dashboard)
     app.router.add_get("/api/dashboard", handle_api_dashboard)
+    app.router.add_get("/api/match-history/{tournament_id}", handle_match_history)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)

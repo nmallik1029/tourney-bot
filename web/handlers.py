@@ -3,6 +3,7 @@ import json
 import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
@@ -27,6 +28,32 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 def _load_template(name: str) -> str:
     return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+
+
+# ── Match history download ────────────────────────────────────────────────────
+async def handle_match_history(request: web.Request) -> web.Response:
+    tournament_id = request.match_info["tournament_id"]
+    t = tournaments.get(tournament_id)
+    if not t:
+        return web.Response(status=404, text="Tournament not found")
+
+    token = request.query.get("token")
+    if not token or token != t.get("admin_token"):
+        return web.Response(status=401, text="Unauthorized")
+
+    payload = {
+        "tournament_id": tournament_id,
+        "tournament_name": t.get("name"),
+        "challonge_url": t.get("challonge_url"),
+        "teams": t.get("teams", []),
+        "match_history": t.get("match_history", []),
+    }
+    body = json.dumps(payload, indent=2, default=str)
+    return web.Response(
+        body=body,
+        content_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{tournament_id}_match_history.json"'},
+    )
 
 
 # ── Krunker webhook ───────────────────────────────────────────────────────────
@@ -59,6 +86,7 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     team2_name = teams[1]["name"]
 
     matched_tournament = None
+    matched_tournament_id = None
     matched_team1 = None
     matched_team2 = None
 
@@ -74,6 +102,7 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
 
         if t1 and t2:
             matched_tournament = t
+            matched_tournament_id = t_id
             matched_team1 = t1
             matched_team2 = t2
             break
@@ -144,6 +173,40 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
             img_buf.seek(0)
             active_match["scoreboard_images"].append(img_buf.read())
 
+        # Capture structured per-map result for match history
+        def _player_record(p):
+            return {
+                "name": p.get("name", ""),
+                "score": p.get("score", 0),
+                "kills": p.get("kills", 0),
+                "deaths": p.get("deaths", 0),
+                "objective_score": p.get("objective_score", 0),
+                "damage_done": p.get("damage_done", 0),
+            }
+
+        if "map_results" not in active_match:
+            active_match["map_results"] = []
+        active_match["map_results"].append({
+            "map_num": len(active_match["map_results"]) + 1,
+            "map_name": map_name,
+            "winner_team": winner_discord["team_name"],
+            "loser_team": loser_discord["team_name"],
+            "team1": {
+                "name": winner_discord["team_name"],
+                "team_id": winner_discord.get("team_id"),
+                "score": winner_score,
+                "players": [_player_record(p) for p in winner_players],
+            },
+            "team2": {
+                "name": loser_discord["team_name"],
+                "team_id": loser_discord.get("team_id"),
+                "score": loser_score,
+                "players": [_player_record(p) for p in loser_players],
+            },
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "scoreboard_url": None,
+        })
+
         series = active_match.get("series_score", {})
         winner_key = winner_discord["team_name"].lower()
         loser_key = loser_discord["team_name"].lower()
@@ -203,6 +266,7 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                 series_winner = t2_name
                 series_loser = t1_name
 
+            posted_msg = None
             updates_ch = bot.get_channel(active_match.get("updates_channel_id"))
             if updates_ch:
                 stored_images = active_match.get("scoreboard_images", [])
@@ -212,15 +276,43 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                         buf = io.BytesIO(img_bytes)
                         buf.seek(0)
                         files.append(discord.File(buf, filename=f"map{i+1}.png"))
-                    await updates_ch.send(
+                    posted_msg = await updates_ch.send(
                         f"**{series_winner}** won **{winner_series_wins}-{loser_series_wins}** against **{series_loser}**",
                         files=files,
                     )
                 else:
-                    await updates_ch.send(
+                    posted_msg = await updates_ch.send(
                         f"**{series_winner}** won **{winner_series_wins}-{loser_series_wins}** against **{series_loser}**"
                     )
                 print(f"[Webhook] Posted series result: {series_winner} {winner_series_wins}-{loser_series_wins} {series_loser}")
+
+            # Backfill scoreboard image URLs onto each map result
+            map_results = active_match.get("map_results", [])
+            if posted_msg and posted_msg.attachments:
+                for i, att in enumerate(posted_msg.attachments):
+                    if i < len(map_results):
+                        map_results[i]["scoreboard_url"] = att.url
+
+            # Persist the full match record into tournament match_history
+            if "match_history" not in matched_tournament:
+                matched_tournament["match_history"] = []
+            matched_tournament["match_history"].append({
+                "match_id": active_match.get("match_id"),
+                "challonge_match_id": active_match.get("challonge_match_id"),
+                "format": active_match.get("format"),
+                "teams": [
+                    {"name": active_match["teams"][0]["name"], "team_id": active_match["teams"][0].get("team_id")},
+                    {"name": active_match["teams"][1]["name"], "team_id": active_match["teams"][1].get("team_id")},
+                ],
+                "picked_maps": active_match.get("picked_maps", []),
+                "series_score": {series_winner: winner_series_wins, series_loser: loser_series_wins},
+                "series_winner": series_winner,
+                "series_loser": series_loser,
+                "maps": map_results,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
+            save_tournaments()
+            print(f"[History] Saved match record ({series_winner} vs {series_loser}) to {matched_tournament_id}.match_history")
 
             # Report to Challonge
             challonge_id = active_match.get("challonge_id")
@@ -496,6 +588,17 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
     except Exception as e:
         return web.json_response({"error": f"channel creation failed: {e}"}, status=500)
 
+    # Create or reuse the global "Tournament Player" role
+    tp_role = discord.utils.get(guild.roles, name="Tournament Player")
+    if not tp_role:
+        try:
+            tp_role = await guild.create_role(name="Tournament Player", mentionable=True)
+            print(f"[Teams] Created global 'Tournament Player' role ({tp_role.id})")
+        except Exception as e:
+            print(f"[Teams] Failed to create 'Tournament Player' role: {e}")
+    if tp_role:
+        t["tournament_player_role_id"] = tp_role.id
+
     # Create per-team roles, categories, and channels
     t["team_roles"] = {}
     t["team_channels"] = {}
@@ -507,16 +610,30 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
             tm["role_id"] = role.id
             t["team_roles"][tm["team_id"]] = role.id
 
-            for player in tm.get("players", []):
-                pid = player.get("discord_id")
-                if pid:
-                    member = guild.get_member(pid)
-                    if member:
-                        try:
-                            await member.add_roles(role)
-                            print(f"[Teams] Assigned role '{team_name}' to {member.display_name}")
-                        except Exception as e:
-                            print(f"[Teams] Failed to assign role to {pid}: {e}")
+            # Collect every member of the team — required players, coach, and subs
+            all_team_members: list[dict] = []
+            all_team_members.extend(tm.get("players", []))
+            coach = tm.get("coach")
+            if coach:
+                all_team_members.append(coach)
+            for sub in tm.get("subs") or []:
+                all_team_members.append(sub)
+
+            for person in all_team_members:
+                pid = person.get("discord_id")
+                if not pid:
+                    continue
+                member = guild.get_member(pid)
+                if not member:
+                    continue
+                try:
+                    roles_to_add = [role]
+                    if tp_role and tp_role not in member.roles:
+                        roles_to_add.append(tp_role)
+                    await member.add_roles(*roles_to_add)
+                    print(f"[Teams] Assigned role '{team_name}' + Tournament Player to {member.display_name}")
+                except Exception as e:
+                    print(f"[Teams] Failed to assign role to {pid}: {e}")
 
             team_perms = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -635,8 +752,33 @@ async def handle_api_dashboard(request: web.Request) -> web.Response:
                 match_data.append({"team1": t1, "team2": t2, "format": fmt, "series_score": score_str})
 
         admin_panel_url = None
+        match_history_url = None
         if t.get("admin_token") and t.get("challonge_id"):
             admin_panel_url = f"{RAILWAY_BASE}/admin/{t_id}?token={t['admin_token']}"
+            match_history_url = f"{RAILWAY_BASE}/api/match-history/{t_id}?token={t['admin_token']}"
+
+        # VOD submission data
+        vod_data = []
+        for team_id, vod_info in t.get("vod_teams", {}).items():
+            team = next((tm for tm in t.get("teams", []) if tm["team_id"] == team_id), None)
+            if not team:
+                continue
+            players_vod = []
+            submissions = team.get("vod_submissions", {})
+            for p in team.get("players", []):
+                pid_str = str(p.get("discord_id", ""))
+                sub = submissions.get(pid_str)
+                players_vod.append({
+                    "ign": p.get("ign", "Unknown"),
+                    "submitted": bool(sub),
+                    "link": sub.get("link", "") if sub else "",
+                })
+            vod_data.append({
+                "team_name": vod_info.get("team_name", "Unknown"),
+                "placement": vod_info.get("placement", ""),
+                "deadline": vod_info.get("deadline", 0),
+                "players": players_vod,
+            })
 
         result.append({
             "id": t_id,
@@ -648,8 +790,11 @@ async def handle_api_dashboard(request: web.Request) -> web.Response:
             "challonge_id": t.get("challonge_id"),
             "challonge_url": t.get("challonge_url"),
             "admin_panel_url": admin_panel_url,
+            "match_history_url": match_history_url,
+            "match_count": len(t.get("match_history", [])),
             "teams": teams_data,
             "matches": match_data,
+            "vods": vod_data,
         })
 
     return web.json_response({"tournaments": result})

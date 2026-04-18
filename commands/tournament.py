@@ -1,11 +1,14 @@
 import uuid
 import os
+import time
 import discord
 from discord import app_commands
 from core.bot_instance import bot
 from core.config import SERVER_ID, ROLE_ID, RAILWAY_BASE, is_authorized, guild_object
 from core.storage import tournaments, save_tournaments, save_config, active_matches, _dashboard_tokens
 from views.registration import SignupView
+from views.vod import VODSubmissionView
+from services.challonge import challonge_get_participants
 
 
 # ── /tournament-setup ──────────────────────────────────────────────────────────
@@ -290,6 +293,140 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
 
+    # ── Determine top 2 teams from Challonge standings ──────────────────────
+    vod_team_ids = set()  # team_ids that need VOD submissions (keep their channels)
+    challonge_id = t.get("challonge_id")
+    participant_map = t.get("challonge_participant_map", {})
+    top_2_teams = []  # list of (team_dict, placement_str)
+
+    if challonge_id:
+        try:
+            participants = await challonge_get_participants(challonge_id)
+            print(f"[VOD] Fetched {len(participants)} participants from Challonge")
+
+            # Sort participants by final_rank (1st, 2nd)
+            ranked = sorted(
+                [p for p in participants if p.get("final_rank")],
+                key=lambda p: p["final_rank"],
+            )
+            print(f"[VOD] Participants with final_rank: {len(ranked)}")
+
+            if ranked:
+                # Challonge has final standings
+                placement_labels = {1: "1st Place", 2: "2nd Place"}
+                for p in ranked[:2]:
+                    rank = p["final_rank"]
+                    pname = p.get("name", "")
+                    # Find our team by name (most reliable)
+                    team = next((tm for tm in t["teams"] if tm["team_name"] == pname), None)
+                    if not team:
+                        # Try via participant_map
+                        c_pid = p["id"]
+                        for tname, mapped_pid in participant_map.items():
+                            if mapped_pid == c_pid:
+                                team = next((tm for tm in t["teams"] if tm["team_name"] == tname), None)
+                                break
+                    if team:
+                        top_2_teams.append((team, placement_labels.get(rank, f"#{rank}")))
+            else:
+                # No final_rank -- tournament may not be finalized on Challonge
+                # Fallback: get all completed matches, find the grand finals participants
+                from services.challonge import challonge_get_matches
+                all_matches = await challonge_get_matches(challonge_id, state="all")
+                print(f"[VOD] Fallback: checking {len(all_matches)} matches for finalists")
+
+                # Find the match with the highest round number (grand finals)
+                if all_matches:
+                    grand_final = max(all_matches, key=lambda m: m.get("round", 0))
+                    gf_p1 = grand_final.get("player1_id")
+                    gf_p2 = grand_final.get("player2_id")
+                    winner_id = grand_final.get("winner_id")
+
+                    if winner_id:
+                        # Tournament has a winner
+                        order = [(winner_id, "1st Place"),
+                                 (gf_p1 if gf_p1 != winner_id else gf_p2, "2nd Place")]
+                    else:
+                        # No winner yet -- just grab both finalists
+                        order = [(gf_p1, "Finalist"), (gf_p2, "Finalist")]
+
+                    for c_pid, label in order:
+                        if not c_pid:
+                            continue
+                        # Find participant name
+                        p = next((pp for pp in participants if pp["id"] == c_pid), None)
+                        if not p:
+                            continue
+                        pname = p.get("name", "")
+                        team = next((tm for tm in t["teams"] if tm["team_name"] == pname), None)
+                        if team:
+                            top_2_teams.append((team, label))
+        except Exception as e:
+            print(f"[VOD] Failed to fetch Challonge standings: {e}")
+
+    # If Challonge didn't give us results, skip VOD embeds
+    if not top_2_teams:
+        print(f"[VOD] No top 2 teams found -- skipping VOD embeds")
+
+    deadline_ts = int(time.time()) + (7 * 24 * 60 * 60)  # 1 week from now
+
+    for team, placement in top_2_teams:
+        our_team_id = team["team_id"]
+        vod_team_ids.add(our_team_id)
+
+        # Send VOD embed to team's text channel
+        ch_ids = t.get("team_channels", {}).get(our_team_id, {})
+        text_ch_id = ch_ids.get("text")
+        if not text_ch_id:
+            print(f"[VOD] No text channel found for {team['team_name']}")
+            continue
+
+        text_ch = guild.get_channel(text_ch_id)
+        if not text_ch:
+            print(f"[VOD] Text channel {text_ch_id} not found in guild for {team['team_name']}")
+            continue
+
+        embed = discord.Embed(
+            title=f"VOD Submission Required: {team['team_name']} ({placement})",
+            description=(
+                f"Congratulations! All players in this team must submit their POV VOD recordings for review.\n\n"
+                f"**Deadline:** <t:{deadline_ts}:F> (<t:{deadline_ts}:R>)\n\n"
+                f"**Only click your own button.**"
+            ),
+            color=0xFFAA00,
+        )
+        embed.set_footer(text=f"Tournament: {t['name']}")
+
+        players = team.get("players", [])
+        view = VODSubmissionView(
+            tournament_id=t_id,
+            team_id=our_team_id,
+            players=players,
+        )
+
+        # Ping the team role
+        role_id = t.get("team_roles", {}).get(our_team_id)
+        role = guild.get_role(role_id) if role_id else None
+        ping = role.mention if role else " ".join(f"<@{p['discord_id']}>" for p in players)
+
+        await text_ch.send(
+            ping,
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+        print(f"[VOD] Sent VOD submission embed to {team['team_name']} ({placement})")
+
+        # Store VOD info on tournament for persistence
+        if "vod_teams" not in t:
+            t["vod_teams"] = {}
+        t["vod_teams"][our_team_id] = {
+            "team_name": team["team_name"],
+            "placement": placement,
+            "deadline": deadline_ts,
+            "channel_id": text_ch_id,
+        }
+
     # Delete match room channels from active_matches
     match_ids_to_remove = []
     for mid, match in active_matches.items():
@@ -330,8 +467,19 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
                 except Exception:
                     pass
 
-    # Delete per-team channels, categories, and roles
+    # Delete per-team channels, categories, and roles (SKIP top 2 teams that need VODs)
     for team_id, ch_ids in t.get("team_channels", {}).items():
+        if team_id in vod_team_ids:
+            # Keep text channel for VOD submissions, delete voice only
+            voice_id = ch_ids.get("voice")
+            if voice_id:
+                ch = guild.get_channel(voice_id)
+                if ch:
+                    try:
+                        await ch.delete()
+                    except Exception:
+                        pass
+            continue
         for ch_id in [ch_ids.get("text"), ch_ids.get("voice")]:
             if ch_id:
                 ch = guild.get_channel(ch_id)
@@ -341,6 +489,8 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
                     except Exception:
                         pass
     for team_id, cat_id in t.get("team_categories", {}).items():
+        if team_id in vod_team_ids:
+            continue  # Keep category for VOD teams
         cat = guild.get_channel(cat_id)
         if cat:
             try:
@@ -348,6 +498,8 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
             except Exception:
                 pass
     for team_id, role_id in t.get("team_roles", {}).items():
+        if team_id in vod_team_ids:
+            continue  # Keep role so pings still work
         role = guild.get_role(role_id)
         if role:
             try:
@@ -360,14 +512,30 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     t.pop("signups_channel_id", None)
     t.pop("updates_channel_id", None)
     t.pop("admin_channel_id", None)
-    t.pop("team_channels", None)
-    t.pop("team_categories", None)
-    t.pop("team_roles", None)
+
+    # Only remove channel/category/role data for non-VOD teams
+    remaining_channels = {tid: ch for tid, ch in t.get("team_channels", {}).items() if tid in vod_team_ids}
+    remaining_categories = {tid: cat for tid, cat in t.get("team_categories", {}).items() if tid in vod_team_ids}
+    remaining_roles = {tid: r for tid, r in t.get("team_roles", {}).items() if tid in vod_team_ids}
+    t["team_channels"] = remaining_channels or None
+    t["team_categories"] = remaining_categories or None
+    t["team_roles"] = remaining_roles or None
+    if not t["team_channels"]:
+        t.pop("team_channels", None)
+    if not t["team_categories"]:
+        t.pop("team_categories", None)
+    if not t["team_roles"]:
+        t.pop("team_roles", None)
     save_tournaments()
+
+    vod_note = ""
+    if vod_team_ids:
+        vod_note = f"\nVOD submission embeds sent to the top 2 teams. Their channels are kept open for 1 week."
 
     await interaction.followup.send(
         f"Tournament `{t_id}` has ended. All channels and roles cleaned up.\n"
         f"Results are preserved -- view them on the dashboard or Challonge: {t.get('challonge_url', 'N/A')}"
+        f"{vod_note}"
     )
 
 

@@ -97,16 +97,32 @@
 
   .empty-state { color: #484f58; font-style: italic; font-size: 0.85rem; padding: 8px 0; }
 
-  /* Action links */
-  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-  .action-btn {
-    display: inline-block; padding: 7px 16px; border-radius: 6px; font-size: 0.8rem;
-    font-weight: 600; text-decoration: none; transition: all 0.2s ease;
-    border: 1px solid #21262d; color: #e6edf3; background: #161b22;
+  /* VOD section */
+  .vod-team { margin-bottom: 14px; }
+  .vod-team:last-child { margin-bottom: 0; }
+  .vod-team-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #21262d;
   }
-  .action-btn:hover { border-color: #f09030; color: #f09030; }
-  .action-btn.primary { background: #f09030; color: #000; border-color: #f09030; }
-  .action-btn.primary:hover { background: #d67d20; }
+  .vod-team-name { font-weight: 600; font-size: 0.9rem; }
+  .vod-placement {
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 10px;
+  }
+  .vod-placement.first { background: rgba(255,215,0,0.15); color: #ffd700; }
+  .vod-placement.second { background: rgba(192,192,192,0.15); color: #c0c0c0; }
+  .vod-player {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 5px 0; font-size: 0.85rem; border-bottom: 1px solid #161b22;
+  }
+  .vod-player:last-child { border-bottom: none; }
+  .vod-player-name { color: #e6edf3; }
+  .vod-status { font-size: 0.8rem; font-weight: 600; }
+  .vod-status.submitted { color: #3fb950; }
+  .vod-status.pending { color: #f85149; }
+  .vod-status a { color: #3fb950; text-decoration: none; }
+  .vod-status a:hover { text-decoration: underline; }
+  .vod-deadline { color: #8b949e; font-size: 0.75rem; margin-top: 6px; }
 
   .loading { text-align: center; padding: 60px; color: #8b949e; }
   .no-tournaments { text-align: center; padding: 80px 20px; color: #484f58; }
@@ -183,6 +199,10 @@ function buildDetail(t) {
   if (t.admin_panel_url) {
     html += detailRow("Admin Panel", '<a href="' + esc(t.admin_panel_url) + '" target="_blank">Open &#8599;</a>');
   }
+  if (t.match_history_url) {
+    const label = 'Download JSON (' + (t.match_count || 0) + ' match' + (t.match_count === 1 ? '' : 'es') + ') &#8595;';
+    html += detailRow("Match Data", '<a href="' + esc(t.match_history_url) + '" download>' + label + '</a>');
+  }
   html += '</div>';
 
   // Teams section
@@ -224,17 +244,39 @@ function buildDetail(t) {
   }
   html += '</div>';
 
-  html += '</div>'; // close detail-grid
+  // VOD section
+  if (t.vods && t.vods.length > 0) {
+    html += '<div class="detail-section" style="grid-column: 1 / -1;"><h3>VODs</h3>';
+    t.vods.forEach(vod => {
+      const placementClass = vod.placement.includes("1st") ? "first" : "second";
+      html += '<div class="vod-team">';
+      html += '<div class="vod-team-header">';
+      html += '<span class="vod-team-name">' + esc(vod.team_name) + '</span>';
+      html += '<span class="vod-placement ' + placementClass + '">' + esc(vod.placement) + '</span>';
+      html += '</div>';
+      vod.players.forEach(p => {
+        let statusHtml;
+        if (p.submitted) {
+          const href = p.link.startsWith("http") ? p.link : "https://" + p.link;
+          statusHtml = '<span class="vod-status submitted"><a href="' + esc(href) + '" target="_blank">&#10003; ' + esc(p.link) + '</a></span>';
+        } else {
+          statusHtml = '<span class="vod-status pending">&#10007; Missing</span>';
+        }
+        html += '<div class="vod-player">';
+        html += '<span class="vod-player-name">' + esc(p.ign) + '</span>';
+        html += statusHtml;
+        html += '</div>';
+      });
+      if (vod.deadline) {
+        const d = new Date(vod.deadline * 1000);
+        html += '<div class="vod-deadline">Deadline: ' + d.toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric", year:"numeric"}) + '</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  }
 
-  // Actions
-  html += '<div class="actions">';
-  if (t.challonge_url) {
-    html += '<a class="action-btn primary" href="' + esc(t.challonge_url) + '" target="_blank">Challonge Bracket</a>';
-  }
-  if (t.admin_panel_url) {
-    html += '<a class="action-btn" href="' + esc(t.admin_panel_url) + '" target="_blank">Admin Panel</a>';
-  }
-  html += '</div>';
+  html += '</div>'; // close detail-grid
 
   return html;
 }

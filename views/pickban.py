@@ -1,3 +1,4 @@
+import os
 import uuid
 import urllib.parse
 import discord
@@ -15,7 +16,10 @@ MAP_IDS = {
     "Burg": "Burg",
 }
 
-WEBHOOK_URL = "https://tourney-bot-production.up.railway.app/krunker"
+WEBHOOK_URL = os.environ.get(
+    "WEBHOOK_URL",
+    "https://tourney-bot-production.up.railway.app/krunker",
+)
 
 PB_SEQUENCES = {
     "bo1": [
@@ -586,9 +590,13 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
 
     t1_player_ids = [p["discord_id"] for p in found_t1["players"]]
     t2_player_ids = [p["discord_id"] for p in found_t2["players"]]
-    all_player_ids = t1_player_ids + t2_player_ids
 
     staff_role = guild.get_role(ROLE_ID)
+
+    # Find team roles (set at tournament start via seeding confirm)
+    team_roles_map = found_tournament.get("team_roles", {}) or {}
+    t1_role = guild.get_role(team_roles_map.get(found_t1["team_id"])) if team_roles_map.get(found_t1["team_id"]) else None
+    t2_role = guild.get_role(team_roles_map.get(found_t2["team_id"])) if team_roles_map.get(found_t2["team_id"]) else None
 
     # Find or create the Matchrooms category
     match_cat = discord.utils.get(guild.categories, name="Matchrooms")
@@ -602,15 +610,34 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     if staff_role:
         overwrites[staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-    for pid in all_player_ids:
-        member = guild.get_member(pid)
+    # Grant view access via team roles; only captains can interact
+    if t1_role:
+        overwrites[t1_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=False, read_message_history=True, add_reactions=False,
+        )
+    if t2_role:
+        overwrites[t2_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=False, read_message_history=True, add_reactions=False,
+        )
+
+    # Captains get send_messages via individual overwrites (overrides role-level false)
+    for captain_id in (t1_captain_id, t2_captain_id):
+        member = guild.get_member(captain_id)
         if member:
-            can_interact = pid in [t1_captain_id, t2_captain_id]
             overwrites[member] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=can_interact,
-                add_reactions=False,
+                view_channel=True, send_messages=True, read_message_history=True, add_reactions=False,
             )
+
+    # Fallback: if team roles are missing, fall back to per-user overwrites for all players
+    if not t1_role or not t2_role:
+        for pid in t1_player_ids + t2_player_ids:
+            if pid in (t1_captain_id, t2_captain_id):
+                continue  # already set above
+            member = guild.get_member(pid)
+            if member:
+                overwrites[member] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=False, read_message_history=True, add_reactions=False,
+                )
 
     channel = await guild.create_text_channel(
         name=f"{found_t1['team_name']} vs {found_t2['team_name']}",

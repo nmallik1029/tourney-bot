@@ -126,7 +126,7 @@ async def on_message(message: discord.Message):
             join_embed = discord.Embed(
                 title="Step 3/3 -- Join the Game",
                 description=(
-                    f"**[Click to Join]({link})**\n\n"
+                    f"{link}\n\n"
                     f"**{team1['name']}** -> join **Alpha** (Team 1)\n"
                     f"**{team2['name']}** -> join **Beta** (Team 2)"
                 ),
