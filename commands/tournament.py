@@ -319,6 +319,101 @@ async def tournament_edit(
     )
 
 
+# ── /tournament-set-captain ───────────────────────────────────────────────────
+@bot.tree.command(
+    name="tournament-set-captain",
+    description="Force-change a team's captain to another existing player on the roster.",
+    guild=guild_object(),
+)
+@is_authorized()
+@app_commands.describe(
+    tournament_id="The tournament ID",
+    team_name="The team name",
+    new_captain="The Discord user to promote to captain (must already be on the roster)",
+)
+async def tournament_set_captain(
+    interaction: discord.Interaction,
+    tournament_id: str,
+    team_name: str,
+    new_captain: discord.Member,
+):
+    from utils.helpers import build_team_embed
+    from views.registration import EditRosterView
+
+    t_id = tournament_id.upper()
+    if t_id not in tournaments:
+        await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
+        return
+
+    t = tournaments[t_id]
+
+    team = None
+    for tm in t.get("teams", []):
+        if tm["team_name"].lower() == team_name.lower():
+            team = tm
+            break
+    if not team:
+        team_list = ", ".join(tm["team_name"] for tm in t.get("teams", []))
+        await interaction.response.send_message(
+            f"Team `{team_name}` not found.\nRegistered teams: {team_list or 'None'}",
+            ephemeral=True,
+        )
+        return
+
+    players = team.get("players", [])
+    target_idx = next((i for i, p in enumerate(players) if p.get("discord_id") == new_captain.id), None)
+    if target_idx is None:
+        current_roster = ", ".join(
+            f"<@{p['discord_id']}>" for p in players
+        ) or "no players"
+        await interaction.response.send_message(
+            f"{new_captain.mention} is not on the **{team['team_name']}** roster.\n"
+            f"Current players: {current_roster}\n"
+            f"(Use `/tournament-edit` or ask them to use Edit Roster to add this user first.)",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    if target_idx == 0:
+        await interaction.response.send_message(
+            f"{new_captain.mention} is already the captain of **{team['team_name']}**.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Swap: promoted player becomes captain, old captain becomes Player 2 (or takes the slot)
+    old_captain = players[0]
+    promoted = players[target_idx]
+
+    # Relabel slots: captain slot -> "Captain"; rest -> "Player 2", "Player 3", ...
+    players[0], players[target_idx] = promoted, old_captain
+    for i, p in enumerate(players):
+        p["label"] = "Captain" if i == 0 else f"Player {i + 1}"
+
+    save_tournaments()
+
+    # Refresh the signup embed
+    signups_ch = interaction.guild.get_channel(t.get("signups_channel_id"))
+    if signups_ch and team.get("signup_message_id"):
+        try:
+            msg = await signups_ch.fetch_message(team["signup_message_id"])
+            new_embed = build_team_embed(team, t_id, team.get("submitter_name", "Unknown"))
+            await msg.edit(embed=new_embed, view=EditRosterView())
+        except Exception as e:
+            print(f"[SetCaptain] Failed to refresh signup embed: {e}")
+
+    await interaction.followup.send(
+        f"**{team['team_name']}** captain updated:\n"
+        f"Old captain: <@{old_captain['discord_id']}> ({old_captain.get('ign', '?')})\n"
+        f"New captain: <@{promoted['discord_id']}> ({promoted.get('ign', '?')})",
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
 # ── /tournament-remove-team ───────────────────────────────────────────────────
 @bot.tree.command(name="tournament-remove-team", description="Remove a team from a tournament.", guild=guild_object())
 @is_authorized()
