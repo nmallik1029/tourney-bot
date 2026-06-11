@@ -1,0 +1,9 @@
+.env
+.env.test
+run_test.bat
+tournaments.json
+config.json
+pug_data.json
+__pycache__/
+*.pyc
+.claude/

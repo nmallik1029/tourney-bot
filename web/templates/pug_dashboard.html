@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PUG Admin Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+  .header { background: linear-gradient(135deg, #161b22 0%, #0d1117 100%); border-bottom: 1px solid #21262d; padding: 24px 32px; }
+  .header h1 { font-size: 1.5rem; font-weight: 600; }
+  .header p { color: #8b949e; font-size: 0.85rem; margin-top: 4px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 32px; display: flex; flex-direction: column; gap: 24px; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 20px; }
+  .card h2 { font-size: 1.1rem; margin-bottom: 14px; color: #f0f6fc; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  tr:hover td { background: #1c2128; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; }
+  .badge.ban { background: rgba(248,81,73,0.15); color: #f85149; }
+  .badge.noadd { background: rgba(240,144,48,0.15); color: #f09030; }
+  .usernames { color: #8b949e; font-size: 0.8rem; }
+  .pill { display: inline-block; background: #21262d; padding: 6px 12px; border-radius: 16px; margin: 3px; font-size: 0.85rem; }
+  .panel-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  input[type=text] { background: #0d1117; border: 1px solid #30363d; color: #e6edf3; padding: 8px 12px; border-radius: 6px; font-size: 0.9rem; min-width: 220px; }
+  button { background: #238636; border: none; color: #fff; padding: 8px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+  button:hover { filter: brightness(1.1); }
+  button.danger { background: #da3633; }
+  button.warn { background: #9e6a03; }
+  button.neutral { background: #30363d; }
+  .muted { color: #8b949e; font-size: 0.85rem; }
+  .empty { color: #6e7681; font-style: italic; padding: 8px 0; }
+  #status { margin-left: 8px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>PUG Admin Dashboard</h1>
+    <p>Manage queues, players, bans, and noadds</p>
+  </div>
+  <div class="container">
+
+    <div class="card">
+      <h2>Admin Actions</h2>
+      <div class="panel-row">
+        <input type="text" id="targetId" placeholder="Discord User ID">
+        <input type="text" id="adminName" placeholder="Your name (admin)">
+      </div>
+      <div class="panel-row">
+        <input type="text" id="reason" placeholder="Reason (ban / no-add)">
+        <input type="text" id="hours" placeholder="Duration in hours (blank = permanent)" style="min-width:280px">
+      </div>
+      <div class="panel-row">
+        <button class="warn" onclick="act('noadd')">Noadd</button>
+        <button class="neutral" onclick="act('unnoadd')">Un-noadd</button>
+      </div>
+      <div class="panel-row">
+        <button onclick="act('create_queue')">Refresh / Force Pop Queue</button>
+        <span id="status"></span>
+      </div>
+      <p class="muted" style="margin-top:10px">Tip: enable Discord Developer Mode, right-click a user → Copy User ID.</p>
+    </div>
+
+    <div class="card">
+      <h2>Current Queue (<span id="queueCount">0</span>)</h2>
+      <div id="queue"></div>
+    </div>
+
+    <div class="card">
+      <h2>Active Matches</h2>
+      <div id="matches"></div>
+    </div>
+
+    <div class="card">
+      <h2>Leaderboard</h2>
+      <table>
+        <thead><tr><th>#</th><th>Player</th><th>ELO</th><th>W/L</th><th>Usernames</th><th>Status</th></tr></thead>
+        <tbody id="players"></tbody>
+      </table>
+    </div>
+
+  </div>
+
+<script>
+const TOKEN = "{{TOKEN}}";
+
+async function load() {
+  const res = await fetch(`/api/pug-dashboard?token=${TOKEN}`);
+  if (!res.ok) { document.body.innerHTML = "<p style='padding:32px'>Invalid token.</p>"; return; }
+  const d = await res.json();
+
+  // Queue
+  document.getElementById("queueCount").textContent = d.queue.length;
+  const q = document.getElementById("queue");
+  q.innerHTML = d.queue.length
+    ? d.queue.map(p => `<span class="pill">${esc(p.name)} <span class="usernames">(${p.discord_id})</span></span>`).join("")
+    : `<div class="empty">Queue is empty.</div>`;
+
+  // Matches
+  const m = document.getElementById("matches");
+  m.innerHTML = d.matches.length
+    ? d.matches.map(x => `<div class="pill">${esc(x.name)} | <b>${esc(x.phase)}</b> (${x.checked_in}/${x.size} checked in)</div>`).join("")
+    : `<div class="empty">No active matches.</div>`;
+
+  // Players
+  const tbody = document.getElementById("players");
+  tbody.innerHTML = d.players.map((p, i) => {
+    let status = "";
+    if (p.noadded) {
+      let t = p.noadd_reason || "no reason";
+      t += p.noadd_until ? ` (until ${new Date(p.noadd_until * 1000).toLocaleString()})` : " (permanent)";
+      status += `<span class="badge noadd" title="${esc(t)}">NOADD</span>`;
+    }
+    return `<tr>
+      <td>${i + 1}</td>
+      <td>${esc(p.name)} <span class="usernames">(${p.discord_id})</span></td>
+      <td><b>${p.elo}</b></td>
+      <td>${p.wins}/${p.losses}</td>
+      <td class="usernames">${p.usernames.map(esc).join(", ") || "-"}</td>
+      <td>${status || "-"}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="empty">No players yet.</td></tr>`;
+}
+
+async function act(action) {
+  const id = document.getElementById("targetId").value.trim();
+  const body = { token: TOKEN, action };
+  body.admin = document.getElementById("adminName").value.trim();
+  if (action !== "create_queue") body.discord_id = id;
+  if (action === "noadd") {
+    body.reason = document.getElementById("reason").value.trim();
+    body.duration_hours = document.getElementById("hours").value.trim();
+  }
+  const res = await fetch(`/api/pug-action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  const st = document.getElementById("status");
+  st.textContent = out.ok ? "Done" : ("Error: " + (out.error || "error"));
+  st.style.color = out.ok ? "#3fb950" : "#f85149";
+  load();
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
