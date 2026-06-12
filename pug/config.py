@@ -11,6 +11,10 @@ PUG_ADMIN_ROLE_ID = int(os.environ.get("PUG_ADMIN_ROLE_ID", 0))
 # PUG helper role, can use every command EXCEPT /pug-setup and /pug-set-account-link.
 PUG_HELPER_ROLE_ID = int(os.environ.get("PUG_HELPER_ROLE_ID", 0))
 
+# Region roles, auto-assigned when a player's region is linked (NA/EU only).
+PUG_NA_ROLE_ID = int(os.environ.get("PUG_NA_ROLE_ID", 0))
+PUG_EU_ROLE_ID = int(os.environ.get("PUG_EU_ROLE_ID", 0))
+
 # Match sizing / timing
 MATCH_SIZE = 8          # players per popped match (4v4)
 TEAM_SIZE = 4           # players per team

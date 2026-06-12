@@ -565,6 +565,17 @@ async def start_draft(match: dict, bot):
         return
     match["phase"] = "draft"
 
+    # Remove the now-stale check-in message (otherwise the last checked-in player still
+    # shows as "waiting" while the draft starts).
+    ch0 = bot.get_channel(match["text_channel_id"])
+    if ch0 and match.get("ping_message_id"):
+        try:
+            old = await ch0.fetch_message(match["ping_message_id"])
+            await old.delete()
+        except discord.NotFound:
+            pass
+    match["ping_message_id"] = None
+
     # Captains = top-2 ELO with random tiebreak (shuffle then stable sort by ELO).
     ordered = match["players"][:]
     random.shuffle(ordered)
@@ -629,16 +640,40 @@ MAP_VOTE_SECONDS = 15
 
 
 async def start_map_vote(match: dict, bot):
+    # Cancel the draft timer — but NOT if we're being called from inside it (auto-pick
+    # path), since cancelling the current task would abort this coroutine mid-setup.
     t = match.get("draft_task")
-    if t:
+    if t and t is not asyncio.current_task():
         t.cancel()
     match["phase"] = "vote"
     match["votes"] = {}
-    match["vote_deadline"] = time.time() + MAP_VOTE_SECONDS
+    match["vote_attempts"] = 0
+    await _send_vote(match, bot, ping=False)
 
+
+async def _send_vote(match: dict, bot, ping: bool):
+    match["vote_deadline"] = time.time() + MAP_VOTE_SECONDS
     ch = bot.get_channel(match["text_channel_id"])
+    if not ch:
+        return
+    # Remove the previous vote message (re-prompt case)
+    old = match.get("vote_message_id")
+    if old:
+        try:
+            m = await ch.fetch_message(old)
+            await m.delete()
+        except discord.NotFound:
+            pass
     from views.pug_vote import build_vote_embed, MapVoteView
-    msg = await ch.send(embed=build_vote_embed(match), view=MapVoteView(match["key"]))
+    content = None
+    if ping:
+        content = " ".join(f"<@{p}>" for p in match["players"]) + "\n**Nobody voted — vote for a map!**"
+    msg = await ch.send(
+        content=content,
+        embed=build_vote_embed(match),
+        view=MapVoteView(match["key"]),
+        allowed_mentions=discord.AllowedMentions(users=True),
+    )
     match["vote_message_id"] = msg.id
     match["vote_task"] = asyncio.create_task(_vote_timer(match, bot))
 
@@ -660,16 +695,19 @@ async def finalize_vote(match: dict, bot):
         return
 
     votes = match.get("votes", {})
-    tally: dict[str, int] = {}
-    for m in votes.values():
-        tally[m] = tally.get(m, 0) + 1
-
-    if tally:
-        top = max(tally.values())
-        winners = [m for m, c in tally.items() if c == top]
-        chosen = random.choice(winners)
-    else:
+    if not votes:
+        # Nobody voted — re-ping and re-prompt a couple times before falling back to random.
+        if match.get("vote_attempts", 0) < 2:
+            match["vote_attempts"] = match.get("vote_attempts", 0) + 1
+            await _send_vote(match, bot, ping=True)
+            return
         chosen = random.choice(MAPS)
+    else:
+        tally: dict[str, int] = {}
+        for m in votes.values():
+            tally[m] = tally.get(m, 0) + 1
+        top = max(tally.values())
+        chosen = random.choice([m for m, c in tally.items() if c == top])
 
     match["map"] = chosen
 

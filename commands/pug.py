@@ -60,6 +60,8 @@ async def link(interaction: discord.Interaction, member: discord.Member, usernam
         return
     names = add_username(member.id, username)
     set_region(member.id, region.value)
+    from pug.roles import apply_region_role
+    await apply_region_role(interaction.guild, member, region.value)
     await interaction.response.send_message(
         f"Linked **{username}** ({region.value}) to {member.mention}.\n"
         f"All linked usernames: {', '.join(f'`{n}`' for n in names)}",

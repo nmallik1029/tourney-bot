@@ -40,8 +40,10 @@ def build_draft_embed(match: dict) -> discord.Embed:
     cur = _current_captain(match)
     if cur is not None:
         deadline = match.get("draft_deadline")
-        timer = f" | Auto-pick <t:{int(deadline)}:R>" if deadline else " | 30s auto-pick"
-        embed.set_footer(text=f"Currently picking: {dn(cur)}{timer}")
+        # Timestamps render in the description, NOT in the footer.
+        countdown = f" — auto-picks <t:{int(deadline)}:R>" if deadline else ""
+        embed.description = f"**Picking now:** {dn(cur)}{countdown}"
+        embed.set_footer(text="Snake draft")
     return embed
 
 

@@ -172,6 +172,12 @@ class LinkAcceptButton(discord.ui.Button):
         pug_data["link_requests"].pop(self.rid, None)
         save_pug_data()
 
+        # Auto-assign the NA/EU region role
+        member = interaction.guild.get_member(uid) if interaction.guild else None
+        if member:
+            from pug.roles import apply_region_role
+            await apply_region_role(interaction.guild, member, req["region"])
+
         embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         embed.color = 0x3FB950
         status = f"Accepted by {interaction.user.mention}"
