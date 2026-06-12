@@ -14,6 +14,7 @@ from pug.config import (
     CHECKIN_SECONDS,
     REPING_INTERVAL,
     BRAND,
+    BRAND_FULL,
 )
 from pug.storage import (
     pug_data,
@@ -1109,7 +1110,7 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
             key=lambda p: p.get("score", 0), reverse=True,
         )
         img_buf = draw_scoreboard(
-            tournament_name=BRAND,
+            tournament_name=BRAND_FULL,
             map_name=map_name,
             team1_name=winner_krunker["name"],
             team1_score=winner_krunker.get("score", 0),

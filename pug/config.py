@@ -3,8 +3,9 @@ import os
 import discord
 from discord import app_commands
 
-# Branding (shown in embeds/scoreboards). Production server is "CKL".
+# Branding. BRAND (short) is used in embed titles; BRAND_FULL on the scoreboard image.
 BRAND = os.environ.get("PUG_BRAND", "CKL")
+BRAND_FULL = os.environ.get("PUG_BRAND_FULL", "Competitive Krunker League")
 
 # PUG admin role, full access, incl. /pug-setup. Set via env or replace fallback.
 PUG_ADMIN_ROLE_ID = int(os.environ.get("PUG_ADMIN_ROLE_ID", 0))

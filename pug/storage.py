@@ -217,6 +217,14 @@ def reset_player(discord_id: int):
     save_pug_data()
 
 
+def reset_profile(discord_id: int):
+    """Clear a player's linked usernames and region (leaves ELO/W-L untouched)."""
+    p = get_player(discord_id)
+    p["usernames"] = []
+    p["region"] = ""
+    save_pug_data()
+
+
 def reset_elo_all():
     """Reset ELO + W/L for every player."""
     for p in pug_data["players"].values():

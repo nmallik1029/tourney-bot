@@ -48,13 +48,13 @@ class AccountLinkView(discord.ui.View):
 
 class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
     usernames = discord.ui.TextInput(
-        label="Krunker Username(s) - CASE-SENSITIVE",
-        placeholder="EXACT case! e.g. xWater, not xwater. Comma-separated if multiple.",
+        label="Krunker Username(s) - CASE-SENSITIVE!!",
+        placeholder="Use commas to separate multiple usernames if necessary",
         required=True, max_length=200,
     )
     primary = discord.ui.TextInput(
-        label="Primary Username - CASE-SENSITIVE",
-        placeholder="EXACT case, e.g. xWater",
+        label="Main Account (put same as above if only one)",
+        placeholder="EXACT case, e.g. xWater not xwater",
         required=True, max_length=60,
     )
     region = discord.ui.TextInput(
@@ -137,6 +137,10 @@ class LinkAcceptButton(discord.ui.Button):
             await interaction.response.send_message("This request was already handled.", ephemeral=True)
             return
 
+        # Ack immediately - the work below (Gist save + role changes) can exceed Discord's
+        # 3-second interaction window, which is what caused "This interaction failed".
+        await interaction.response.defer()
+
         uid = int(req["user_id"])
         applied, skipped = [], []
         for u in req["usernames"]:
@@ -165,7 +169,10 @@ class LinkAcceptButton(discord.ui.Button):
         embed.add_field(name="Status", value=status, inline=False)
         for item in self.view.children:
             item.disabled = True
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        try:
+            await interaction.message.edit(embed=embed, view=self.view)
+        except discord.HTTPException:
+            pass
 
         try:
             user = await interaction.client.fetch_user(uid)
@@ -207,9 +214,10 @@ class LinkDenyModal(discord.ui.Modal, title="Deny Link Request"):
             await interaction.response.send_message("This request was already handled.", ephemeral=True)
             return
         reason = self.reason.value.strip() or "No reason provided."
+        # Ack first, then do the slow Gist save / edits.
+        await interaction.response.send_message("Denied. The user has been notified.", ephemeral=True)
         pug_data["link_requests"].pop(self.rid, None)
         save_pug_data()
-        await interaction.response.send_message("Denied. The user has been notified.", ephemeral=True)
 
         ch = interaction.client.get_channel(int(req.get("review_channel_id", 0)))
         if ch:

@@ -28,6 +28,7 @@ from pug.storage import (
     set_noadd,
     set_elo,
     reset_player,
+    reset_profile,
     reset_elo_all,
     reset_queue_counter,
     get_noadd_info,
@@ -428,6 +429,24 @@ async def set_primary(interaction: discord.Interaction, user: discord.Member, us
         return
     await interaction.response.send_message(
         f"Set {user.mention}'s primary name to **{username}**.",
+        ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.tree.command(
+    name="pug-reset-profile",
+    description="Wipe a player's linked usernames and region (ELO is untouched).",
+    guild=guild_object(),
+)
+@is_pug_staff()
+@app_commands.describe(user="Player whose linked accounts + region to clear")
+async def pug_reset_profile(interaction: discord.Interaction, user: discord.Member):
+    reset_profile(user.id)
+    from pug.roles import apply_region_role
+    await apply_region_role(interaction.guild, user, "")  # removes any NA/EU role
+    await interaction.response.send_message(
+        f"Reset {user.mention}'s profile - cleared linked usernames + region (and region role). "
+        f"ELO is unchanged; use `/elo-reset` for that.",
         ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
     )
 
