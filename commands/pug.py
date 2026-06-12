@@ -163,12 +163,29 @@ async def pug_setup(interaction: discord.Interaction):
 @is_pug_admin()
 @app_commands.describe(channel="The #account-link channel")
 async def pug_set_account_link(interaction: discord.Interaction, channel: discord.TextChannel):
+    from views.pug_link import build_account_link_embed, AccountLinkView
     pug_data["config"]["account_link_channel_id"] = channel.id
+    msg = await channel.send(embed=build_account_link_embed(), view=AccountLinkView())
+    pug_data["config"]["account_link_message_id"] = msg.id
     save_pug_data()
     await interaction.response.send_message(
-        f"Account-link channel set to {channel.mention}. "
-        f"Unlinked players will now be pointed there.",
+        f"Account-link embed posted in {channel.mention}. Unlinked players are pointed there.",
         ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="pug-set-review-channel",
+    description="Set the channel where account-link requests are sent for review.",
+    guild=guild_object(),
+)
+@is_pug_admin()
+@app_commands.describe(channel="The link-requests review channel (admin-only)")
+async def pug_set_review_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    pug_data["config"]["review_channel_id"] = channel.id
+    save_pug_data()
+    await interaction.response.send_message(
+        f"Account-link requests will be sent to {channel.mention} for review.", ephemeral=True
     )
 
 

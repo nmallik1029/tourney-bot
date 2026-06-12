@@ -352,8 +352,14 @@ All three are env vars (fall back to `0` / `CKL` in `pug/config.py` if unset).
 
 ### Setup
 1. Set `PUG_ADMIN_ROLE_ID` (and optionally `PUG_HELPER_ROLE_ID`).
-2. Run `/pug-setup`, creates the `Pugs` category, a locked `#queue` channel (with the queue embed), an always-on `Queue` voice channel, and `#results`.
-3. Link players' Krunker usernames: `/link <member> <username>` (repeatable for alts). A username can only be linked to one Discord player at a time. This is how the bot auto-sorts players into teams when hosting and maps game results back to Discord for ELO.
+2. Run `/pug-setup`, creates the `Pugs` category, a locked `#queue` channel (with the queue embed), and `#results`. (Match VCs are created on pop.)
+3. Account linking: create two channels yourself, then run `/pug-set-account-link #account-link` (posts the info embed + **Link Your Account** button there) and `/pug-set-review-channel #link-requests` (where requests are reviewed).
+
+### Account linking flow (player-driven, admin-approved)
+1. A player clicks **Link Your Account** in `#account-link` → a form asks for username(s), their primary, and region.
+2. The bot opens a **private thread** for them to upload a Krunker **screenshot** (proof).
+3. The request (data + screenshot) is posted to the review channel with **Accept / Deny** buttons.
+4. Accept links the account (usernames + primary + region) and DMs the player; Deny prompts for a reason and DMs it. `/link` / `/unlink` still let staff edit links directly. A username can only belong to one player.
 
 ### Flow
 1. **Queue**, players click **Join Queue** on the `#queue` embed. At 8 players it pops.
@@ -382,7 +388,8 @@ The chosen region is baked into the host link and enforced when the host pastes 
 | Command | Who | Description |
 |---|---|---|
 | `/pug-setup` | Admin | Create the PUG channels + queue embed |
-| `/pug-set-account-link <channel>` | Admin | Set the channel unlinked players are pointed to |
+| `/pug-set-account-link <channel>` | Admin | Post the linking embed + button in the account-link channel |
+| `/pug-set-review-channel <channel>` | Admin | Set where account-link requests are reviewed |
 | `/link <member> <username> <region>` | Staff | Link a Krunker username + region (NA/EU/ASIA/OCE/ME) to a player (repeatable; rejects usernames already linked to another player) |
 | `/unlink <member> <username>` | Staff | Remove a linked username |
 | `/set-primary <member> <username>` | Staff | Make a linked username the player's primary (used in lists + webhook team assignment) |

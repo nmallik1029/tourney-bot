@@ -63,12 +63,18 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     except Exception:
         return web.Response(status=400, text="Invalid JSON")
 
-    raw_json = json.dumps(payload, indent=2)
-    for guild in bot.guilds:
-        ch = discord.utils.get(guild.text_channels, name="test-raw-data")
-        if ch:
-            for i in range(0, len(raw_json), 1990):
-                await ch.send(f"```json\n{raw_json[i:i+1990]}\n```")
+    # Optional debug dump to a #test-raw-data channel. Wrapped so it can NEVER block
+    # the actual result handling, and chunked to fit the 2000-char limit (incl. the
+    # ```json ... ``` wrapper, which adds 12 chars).
+    try:
+        raw_json = json.dumps(payload, indent=2)
+        for guild in bot.guilds:
+            ch = discord.utils.get(guild.text_channels, name="test-raw-data")
+            if ch:
+                for i in range(0, len(raw_json), 1900):
+                    await ch.send(f"```json\n{raw_json[i:i+1900]}\n```")
+    except Exception as e:
+        print(f"[Webhook] raw-data dump failed (non-fatal): {e}")
 
     event_type = payload.get("type")
     if event_type != "match_end":

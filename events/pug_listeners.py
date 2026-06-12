@@ -1,22 +1,29 @@
+import asyncio
 import re
 
 import discord
 
 from core.bot_instance import bot
 from core.config import SERVER_ID
-from pug.storage import pug_matches
+from pug.storage import pug_matches, pug_data, pending_link_threads
 from pug.match import get_match_for_channel, mark_checked_in, cleanup_orphaned_channels, reset_queue_on_start
 from views.pug_queue import QueueView
+from views.pug_link import AccountLinkView, LinkReviewView, post_link_request
 
 _did_startup = False
 
 
 @bot.listen("on_ready")
 async def pug_on_ready():
-    """Re-register the persistent queue view, reset the stale queue embed, and clean up
-    any match channels orphaned by a restart. Runs its one-time work only once."""
+    """Re-register persistent views, reset the stale queue embed, and clean up orphaned
+    match channels. The one-time work runs only once."""
     global _did_startup
     bot.add_view(QueueView())
+    bot.add_view(AccountLinkView())
+    # Re-register review buttons for any pending account-link requests
+    for rid in list(pug_data.get("link_requests", {}).keys()):
+        bot.add_view(LinkReviewView(rid))
+
     if _did_startup:
         return
     _did_startup = True
@@ -29,6 +36,41 @@ async def pug_on_ready():
                 print(f"[Pug] Cleaned up {n} orphaned match channel(s).")
     except Exception as e:
         print(f"[Pug] startup cleanup error: {e}")
+
+
+@bot.listen("on_message")
+async def pug_link_screenshot(message: discord.Message):
+    """Capture the proof screenshot a user uploads in their private link thread."""
+    if message.author.bot:
+        return
+    pend = pending_link_threads.get(message.channel.id)
+    if not pend or message.author.id != pend["user_id"]:
+        return
+
+    img = next((a for a in message.attachments if (a.content_type or "").startswith("image")), None)
+    if not img:
+        await message.channel.send("Please upload an **image** screenshot to finish your request.")
+        return
+    try:
+        data = await img.read()
+    except discord.HTTPException:
+        await message.channel.send("Couldn't read that image — please try uploading it again.")
+        return
+
+    rid = await post_link_request(
+        bot, pend["user_id"], pend["usernames"], pend["primary"], pend["region"], data, "proof.png"
+    )
+    pending_link_threads.pop(message.channel.id, None)
+    if not rid:
+        await message.channel.send("Couldn't submit — the review channel isn't set. Ask an admin.")
+        return
+
+    await message.channel.send("✅ Submitted for review! You'll be notified once an admin reviews it.")
+    await asyncio.sleep(5)
+    try:
+        await message.channel.delete()
+    except discord.HTTPException:
+        pass
 
 
 @bot.listen("on_voice_state_update")

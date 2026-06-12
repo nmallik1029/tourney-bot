@@ -23,6 +23,7 @@ def _default_data() -> dict:
         "players": {},      # discord_id(str) -> {elo, wins, losses, usernames[]}
         "noadds": {},       # discord_id(str) -> {reason, until, admin, at} (the single block)
         "mod_log": [],      # [{user, action, reason, admin, at, until}]
+        "link_requests": {},  # rid -> {user_id, usernames, primary, region, review_message_id, review_channel_id}
         "queue_counter": 0,
         "config": {
             "queue_channel_id": 0,
@@ -30,6 +31,8 @@ def _default_data() -> dict:
             "queue_vc_id": 0,
             "results_channel_id": 0,
             "account_link_channel_id": 0,
+            "account_link_message_id": 0,
+            "review_channel_id": 0,
             "category_id": 0,
         },
         "dashboard_token": "",
@@ -120,6 +123,7 @@ pug_data: dict = load_pug_data()
 pug_queue: list[int] = []          # FIFO of Discord IDs currently queued (in-memory)
 pug_matches: dict[str, dict] = {}  # match_key -> live match state (in-memory)
 sim_players: dict[int, dict] = {}  # fake players for /simulate (never persisted)
+pending_link_threads: dict[int, dict] = {}  # thread_id -> {user_id, usernames, primary, region} (in-memory)
 
 
 # Player helpers
