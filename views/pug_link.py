@@ -1,4 +1,3 @@
-import io
 import uuid
 
 import discord
@@ -6,13 +5,14 @@ import discord
 from pug.config import VALID_REGIONS, BRAND, member_is_pug_staff
 from pug.storage import (
     pug_data,
-    pending_link_threads,
     save_pug_data,
     add_username,
     set_primary_username,
     set_region,
     username_to_discord,
 )
+
+CASE_WARNING = "⚠️ Usernames are **CASE-SENSITIVE** - type them EXACTLY as they appear in Krunker (e.g. `xWater`, not `xwater`)."
 
 
 # ── #account-link entry point ──────────────────────────────────────────────────
@@ -23,10 +23,9 @@ def build_account_link_embed() -> discord.Embed:
             "To play PUGs you must link your Krunker account.\n\n"
             "Click **Link Your Account** below and provide:\n"
             "**1.** Your Krunker **username(s)** (and which is your **primary**)\n"
-            "**2.** A **screenshot** proving the account is yours (username visible in Krunker)\n"
-            "**3.** Your **region** (NA / EU / ASIA / OCE / ME)\n\n"
-            "You'll get a private thread to drop your screenshot in. An admin then reviews "
-            "and approves your request."
+            "**2.** Your **region** (NA / EU / ASIA / OCE / ME)\n\n"
+            f"{CASE_WARNING}\n\n"
+            "An admin will review and approve your request."
         ),
         color=0x5865F2,
     )
@@ -49,10 +48,14 @@ class AccountLinkView(discord.ui.View):
 
 class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
     usernames = discord.ui.TextInput(
-        label="Krunker Username(s)", placeholder="Comma-separated if you have multiple", required=True, max_length=200
+        label="Krunker Username(s) - CASE-SENSITIVE",
+        placeholder="EXACT case! e.g. xWater, not xwater. Comma-separated if multiple.",
+        required=True, max_length=200,
     )
     primary = discord.ui.TextInput(
-        label="Primary Username", placeholder="Your main account name", required=True, max_length=60
+        label="Primary Username - CASE-SENSITIVE",
+        placeholder="EXACT case, e.g. xWater",
+        required=True, max_length=60,
     )
     region = discord.ui.TextInput(
         label="Region (NA / EU / ASIA / OCE / ME)", placeholder="NA", required=True, max_length=6
@@ -74,41 +77,20 @@ class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
         if primary.lower() not in [n.lower() for n in names]:
             names.insert(0, primary)
 
-        # Private thread for the screenshot upload
-        try:
-            thread = await interaction.channel.create_thread(
-                name=f"link-{interaction.user.name}"[:90],
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-            )
-            await thread.add_user(interaction.user)
-        except discord.HTTPException as e:
+        rid = await post_link_request(interaction.client, interaction.user.id, names, primary, region)
+        if not rid:
             await interaction.response.send_message(
-                f"Couldn't create your upload thread ({e}). Make sure the bot can create private threads here.",
-                ephemeral=True,
+                "Couldn't submit - the review channel isn't set. Ask an admin.", ephemeral=True
             )
             return
-
-        pending_link_threads[thread.id] = {
-            "user_id": interaction.user.id,
-            "usernames": names,
-            "primary": primary,
-            "region": region,
-        }
-        await thread.send(
-            f"<@{interaction.user.id}> Upload your **Krunker screenshot** here (your username must be visible) "
-            f"to finish. Just drag or paste the image into this thread.",
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
         await interaction.response.send_message(
-            f"Almost done — upload your screenshot in {thread.mention} to submit your request.", ephemeral=True
+            "Submitted for review! You'll be notified once an admin reviews it.", ephemeral=True
         )
 
 
 # ── Admin review ────────────────────────────────────────────────────────────────
-async def post_link_request(bot, user_id: int, usernames: list[str], primary: str, region: str,
-                            image_bytes: bytes, filename: str) -> str | None:
-    """Post a review embed (with the proof screenshot) to the review channel."""
+async def post_link_request(bot, user_id: int, usernames: list[str], primary: str, region: str) -> str | None:
+    """Post a review embed to the review channel with Accept/Deny buttons."""
     review_ch = bot.get_channel(pug_data["config"].get("review_channel_id"))
     if not review_ch:
         return None
@@ -116,14 +98,12 @@ async def post_link_request(bot, user_id: int, usernames: list[str], primary: st
     rid = uuid.uuid4().hex[:8]
     embed = discord.Embed(title="Account Link Request", color=0xFFA500)
     embed.add_field(name="User", value=f"<@{user_id}>", inline=False)
-    embed.add_field(name="Username(s)", value=", ".join(usernames), inline=True)
-    embed.add_field(name="Primary", value=primary, inline=True)
+    embed.add_field(name="Username(s)", value=", ".join(f"`{u}`" for u in usernames), inline=True)
+    embed.add_field(name="Primary", value=f"`{primary}`", inline=True)
     embed.add_field(name="Region", value=region, inline=True)
-    embed.set_image(url=f"attachment://{filename}")
+    embed.set_footer(text="Usernames are CASE-SENSITIVE - verify they match Krunker exactly.")
 
-    file = discord.File(io.BytesIO(image_bytes), filename=filename)
-    msg = await review_ch.send(embed=embed, file=file, view=LinkReviewView(rid))
-
+    msg = await review_ch.send(embed=embed, view=LinkReviewView(rid))
     pug_data["link_requests"][rid] = {
         "user_id": user_id,
         "usernames": usernames,
@@ -172,7 +152,6 @@ class LinkAcceptButton(discord.ui.Button):
         pug_data["link_requests"].pop(self.rid, None)
         save_pug_data()
 
-        # Auto-assign the NA/EU region role
         member = interaction.guild.get_member(uid) if interaction.guild else None
         if member:
             from pug.roles import apply_region_role
@@ -232,7 +211,6 @@ class LinkDenyModal(discord.ui.Modal, title="Deny Link Request"):
         save_pug_data()
         await interaction.response.send_message("Denied. The user has been notified.", ephemeral=True)
 
-        # Edit the original review message
         ch = interaction.client.get_channel(int(req.get("review_channel_id", 0)))
         if ch:
             try:

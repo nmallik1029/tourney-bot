@@ -123,7 +123,6 @@ pug_data: dict = load_pug_data()
 pug_queue: list[int] = []          # FIFO of Discord IDs currently queued (in-memory)
 pug_matches: dict[str, dict] = {}  # match_key -> live match state (in-memory)
 sim_players: dict[int, dict] = {}  # fake players for /simulate (never persisted)
-pending_link_threads: dict[int, dict] = {}  # thread_id -> {user_id, usernames, primary, region} (in-memory)
 
 
 # Player helpers

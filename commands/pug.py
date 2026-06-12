@@ -43,7 +43,11 @@ from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embe
     guild=guild_object(),
 )
 @is_pug_staff()
-@app_commands.describe(member="The Discord member", username="Their Krunker username", region="Their region")
+@app_commands.describe(
+    member="The Discord member",
+    username="Krunker username - CASE-SENSITIVE, type it exactly",
+    region="Their region",
+)
 @app_commands.choices(region=[app_commands.Choice(name=r, value=r) for r in VALID_REGIONS])
 async def link(interaction: discord.Interaction, member: discord.Member, username: str,
                region: app_commands.Choice[str]):
@@ -64,7 +68,8 @@ async def link(interaction: discord.Interaction, member: discord.Member, usernam
     await apply_region_role(interaction.guild, member, region.value)
     await interaction.response.send_message(
         f"Linked **{username}** ({region.value}) to {member.mention}.\n"
-        f"All linked usernames: {', '.join(f'`{n}`' for n in names)}",
+        f"All linked usernames: {', '.join(f'`{n}`' for n in names)}\n"
+        f"-# Usernames are case-sensitive - make sure they match Krunker exactly.",
         ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )

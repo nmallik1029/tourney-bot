@@ -640,7 +640,7 @@ MAP_VOTE_SECONDS = 15
 
 
 async def start_map_vote(match: dict, bot):
-    # Cancel the draft timer — but NOT if we're being called from inside it (auto-pick
+    # Cancel the draft timer - but NOT if we're being called from inside it (auto-pick
     # path), since cancelling the current task would abort this coroutine mid-setup.
     t = match.get("draft_task")
     if t and t is not asyncio.current_task():
@@ -667,7 +667,7 @@ async def _send_vote(match: dict, bot, ping: bool):
     from views.pug_vote import build_vote_embed, MapVoteView
     content = None
     if ping:
-        content = " ".join(f"<@{p}>" for p in match["players"]) + "\n**Nobody voted — vote for a map!**"
+        content = " ".join(f"<@{p}>" for p in match["players"]) + "\n**Nobody voted - vote for a map!**"
     msg = await ch.send(
         content=content,
         embed=build_vote_embed(match),
@@ -696,7 +696,7 @@ async def finalize_vote(match: dict, bot):
 
     votes = match.get("votes", {})
     if not votes:
-        # Nobody voted — re-ping and re-prompt a couple times before falling back to random.
+        # Nobody voted - re-ping and re-prompt a couple times before falling back to random.
         if match.get("vote_attempts", 0) < 2:
             match["vote_attempts"] = match.get("vote_attempts", 0) + 1
             await _send_vote(match, bot, ping=True)
@@ -1040,7 +1040,7 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
             team_player_ids.setdefault(p.get("team"), set()).add(did)
             all_payload_ids.add(did)
 
-    # 1) Match by player identity overlap (robust — independent of team-name strings).
+    # 1) Match by player identity overlap (robust - independent of team-name strings).
     match = None
     if all_payload_ids:
         best = 0
@@ -1077,7 +1077,7 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
     if not winner_krunker or not loser_krunker:
         return True  # it's ours but malformed; swallow it
 
-    # Decide which match team won — prefer player membership, fall back to team-name.
+    # Decide which match team won - prefer player membership, fall back to team-name.
     team1_ids = set(match["teams"][cap1])
     team2_ids = set(match["teams"][cap2])
     winner_payload_ids = team_player_ids.get(winner_team_num, set())

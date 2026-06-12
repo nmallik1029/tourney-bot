@@ -1,14 +1,13 @@
-import asyncio
 import re
 
 import discord
 
 from core.bot_instance import bot
 from core.config import SERVER_ID
-from pug.storage import pug_matches, pug_data, pending_link_threads
+from pug.storage import pug_matches, pug_data
 from pug.match import get_match_for_channel, mark_checked_in, cleanup_orphaned_channels, reset_queue_on_start
 from views.pug_queue import QueueView
-from views.pug_link import AccountLinkView, LinkReviewView, post_link_request
+from views.pug_link import AccountLinkView, LinkReviewView
 
 _did_startup = False
 
@@ -36,41 +35,6 @@ async def pug_on_ready():
                 print(f"[Pug] Cleaned up {n} orphaned match channel(s).")
     except Exception as e:
         print(f"[Pug] startup cleanup error: {e}")
-
-
-@bot.listen("on_message")
-async def pug_link_screenshot(message: discord.Message):
-    """Capture the proof screenshot a user uploads in their private link thread."""
-    if message.author.bot:
-        return
-    pend = pending_link_threads.get(message.channel.id)
-    if not pend or message.author.id != pend["user_id"]:
-        return
-
-    img = next((a for a in message.attachments if (a.content_type or "").startswith("image")), None)
-    if not img:
-        await message.channel.send("Please upload an **image** screenshot to finish your request.")
-        return
-    try:
-        data = await img.read()
-    except discord.HTTPException:
-        await message.channel.send("Couldn't read that image — please try uploading it again.")
-        return
-
-    rid = await post_link_request(
-        bot, pend["user_id"], pend["usernames"], pend["primary"], pend["region"], data, "proof.png"
-    )
-    pending_link_threads.pop(message.channel.id, None)
-    if not rid:
-        await message.channel.send("Couldn't submit — the review channel isn't set. Ask an admin.")
-        return
-
-    await message.channel.send("✅ Submitted for review! You'll be notified once an admin reviews it.")
-    await asyncio.sleep(5)
-    try:
-        await message.channel.delete()
-    except discord.HTTPException:
-        pass
 
 
 @bot.listen("on_voice_state_update")
