@@ -117,18 +117,20 @@ async def pug_krunker_link(message: discord.Message):
     all_pings = " ".join(f"<@{p}>" for p in all_ids)
 
     from pug.storage import primary_username
+    from views.pug_pickban import JoinGameView
     join_embed = discord.Embed(
         title="Join the Game",
         description=(
             f"{link}\n\n"
-            f"**{primary_username(cap1, 'Team 1')}** → join **Alpha** (Team 1)\n"
-            f"**{primary_username(cap2, 'Team 2')}** → join **Beta** (Team 2)"
+            f"**{primary_username(cap1, 'Team 1')}** -> join **Alpha** (Team 1)\n"
+            f"**{primary_username(cap2, 'Team 2')}** -> join **Beta** (Team 2)"
         ),
         color=0x00FF7F,
     )
-    join_embed.set_footer(text="Join the correct team or the match won't count.")
+    join_embed.set_footer(text="Join the correct team or the match won't count. Need to redo it? Use Rehost Map.")
     await message.channel.send(
         all_pings,
         embed=join_embed,
+        view=JoinGameView(match["key"]),
         allowed_mentions=discord.AllowedMentions(users=True),
     )

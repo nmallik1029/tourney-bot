@@ -167,6 +167,12 @@ def add_username(discord_id: int, username: str) -> list[str]:
     return player["usernames"]
 
 
+def set_username(discord_id: int, username: str):
+    """Set a player's single linked Krunker account, replacing any existing one(s)."""
+    get_player(discord_id)["usernames"] = [username]
+    save_pug_data()
+
+
 def remove_username(discord_id: int, username: str) -> list[str]:
     player = get_player(discord_id)
     player["usernames"] = [u for u in player["usernames"] if u.lower() != username.lower()]

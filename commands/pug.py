@@ -20,10 +20,9 @@ from pug.storage import (
     pug_matches,
     save_pug_data,
     get_player,
-    add_username,
+    set_username,
     remove_username,
     username_to_discord,
-    set_primary_username,
     set_region,
     set_noadd,
     set_elo,
@@ -40,7 +39,7 @@ from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embe
 # /link
 @bot.tree.command(
     name="link",
-    description="Link a Krunker username + region to a player (repeatable for multiple usernames).",
+    description="Link a player's single Krunker account + region (replaces any existing one).",
     guild=guild_object(),
 )
 @is_pug_staff()
@@ -63,14 +62,13 @@ async def link(interaction: discord.Interaction, member: discord.Member, usernam
             ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
         )
         return
-    names = add_username(member.id, username)
+    set_username(member.id, username)
     set_region(member.id, region.value)
     from pug.roles import apply_region_role
     await apply_region_role(interaction.guild, member, region.value)
     await interaction.response.send_message(
         f"Linked **{username}** ({region.value}) to {member.mention}.\n"
-        f"All linked usernames: {', '.join(f'`{n}`' for n in names)}\n"
-        f"-# Usernames are case-sensitive - make sure they match Krunker exactly.",
+        f"-# Username is case-sensitive - make sure it matches Krunker exactly.",
         ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
@@ -414,23 +412,6 @@ class ConfirmResetView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(content="Cancelled, no changes made.", view=self)
-
-
-@bot.tree.command(name="set-primary", description="Set a player's primary linked username.", guild=guild_object())
-@is_pug_staff()
-@app_commands.describe(user="Player", username="One of their linked usernames to make primary")
-async def set_primary(interaction: discord.Interaction, user: discord.Member, username: str):
-    ok = set_primary_username(user.id, username)
-    if not ok:
-        await interaction.response.send_message(
-            f"`{username}` isn't linked to {user.mention}. Link it first with `/link`.",
-            ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
-    await interaction.response.send_message(
-        f"Set {user.mention}'s primary name to **{username}**.",
-        ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
-    )
 
 
 @bot.tree.command(

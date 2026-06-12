@@ -30,16 +30,19 @@ class RequestSubButton(discord.ui.Button):
             await interaction.response.send_message("A sub request is already pending.", ephemeral=True)
             return
 
+        is_staff = member_is_pug_staff(interaction.user)
+        hint = "Pick who to sub **out**, then search for the player to sub **in**, then click Confirm."
+        if is_staff:
+            hint += "\n*(Staff: **Force Sub** skips the 4-way approval.)*"
         await interaction.response.send_message(
-            "Pick who to sub **out**, then search for the player to sub **in** "
-            "(type their name), and click Confirm.",
-            view=SubSetupView(self.match_key, interaction.guild, interaction.user.id),
+            hint,
+            view=SubSetupView(self.match_key, interaction.guild, interaction.user.id, is_staff),
             ephemeral=True,
         )
 
 
 class SubSetupView(discord.ui.View):
-    def __init__(self, match_key: str, guild: discord.Guild, requester_id: int):
+    def __init__(self, match_key: str, guild: discord.Guild, requester_id: int, is_staff: bool = False):
         super().__init__(timeout=120)
         self.match_key = match_key
         self.out_id: int | None = None
@@ -61,6 +64,53 @@ class SubSetupView(discord.ui.View):
         self.add_item(OutgoingSelect(options))
         self.add_item(IncomingSelect())
         self.add_item(ConfirmSubButton())
+        if is_staff:
+            self.add_item(ForceSubButton())
+
+
+def _validate_sub(match: dict, out_id, in_id, guild):
+    """Returns (error_message_or_None, in_member_or_None)."""
+    if not out_id or not in_id:
+        return "Select both players first.", None
+    if in_id == out_id or in_id in match["players"]:
+        return "That player is already in this match.", None
+    if is_noadded(in_id):
+        return "That player is no-added.", None
+    if not get_player(in_id)["usernames"]:
+        return "The incoming player needs a linked Krunker account first (`/link`).", None
+    in_member = guild.get_member(in_id)
+    if not in_member:
+        return "Couldn't find that member.", None
+    return None, in_member
+
+
+class ForceSubButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Force Sub (Staff)", style=discord.ButtonStyle.danger, row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: SubSetupView = self.view
+        match = pug_matches.get(view.match_key)
+        if not match:
+            await interaction.response.send_message("Match no longer exists.", ephemeral=True)
+            return
+        if not member_is_pug_staff(interaction.user):
+            await interaction.response.send_message("Only staff can force a sub.", ephemeral=True)
+            return
+        err, _ = _validate_sub(match, view.out_id, view.in_id, interaction.guild)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        out_id, in_id = view.out_id, view.in_id
+        match.pop("pending_sub", None)
+        await interaction.response.edit_message(content="Forcing sub...", view=None)
+        from pug.match import replace_player
+        await replace_player(match, out_id, in_id, interaction.client)
+        await interaction.channel.send(
+            f"{interaction.user.mention} force-subbed <@{out_id}> ➜ <@{in_id}>.",
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
 
 
 class OutgoingSelect(discord.ui.Select):
@@ -94,28 +144,11 @@ class ConfirmSubButton(discord.ui.Button):
         if match.get("pending_sub"):
             await interaction.response.send_message("A sub request is already pending.", ephemeral=True)
             return
-        if not view.out_id or not view.in_id:
-            await interaction.response.send_message("Select both players first.", ephemeral=True)
+        err, in_member = _validate_sub(match, view.out_id, view.in_id, interaction.guild)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
             return
-
         out_id, in_id = view.out_id, view.in_id
-        if in_id == out_id or in_id in match["players"]:
-            await interaction.response.send_message("That player is already in this match.", ephemeral=True)
-            return
-        if is_noadded(in_id):
-            await interaction.response.send_message("That player is no-added.", ephemeral=True)
-            return
-        if not get_player(in_id)["usernames"]:
-            await interaction.response.send_message(
-                "The incoming player needs a linked Krunker account first (`/link`).", ephemeral=True
-            )
-            return
-
-        guild = interaction.guild
-        in_member = guild.get_member(in_id)
-        if not in_member:
-            await interaction.response.send_message("Couldn't find that member.", ephemeral=True)
-            return
 
         # Give the incoming player access to the match channel so they can approve.
         ch = interaction.channel

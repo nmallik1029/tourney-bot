@@ -6,13 +6,12 @@ from pug.config import VALID_REGIONS, BRAND, member_is_pug_staff
 from pug.storage import (
     pug_data,
     save_pug_data,
-    add_username,
-    set_primary_username,
+    set_username,
     set_region,
     username_to_discord,
 )
 
-CASE_WARNING = "⚠️ Usernames are **CASE-SENSITIVE** - type them EXACTLY as they appear in Krunker (e.g. `xWater`, not `xwater`)."
+CASE_WARNING = "Your username is **CASE-SENSITIVE** - type it EXACTLY as it appears in Krunker (e.g. `xWater`, not `xwater`)."
 
 
 # ── #account-link entry point ──────────────────────────────────────────────────
@@ -20,9 +19,9 @@ def build_account_link_embed() -> discord.Embed:
     embed = discord.Embed(
         title=f"Link Your {BRAND} Account",
         description=(
-            "To play PUGs you must link your Krunker account.\n\n"
+            "To play pugs you must link your Krunker account. You can link **one** account.\n\n"
             "Click **Link Your Account** below and provide:\n"
-            "**1.** Your Krunker **username(s)** (and which is your **primary**)\n"
+            "**1.** Your Krunker **username**\n"
             "**2.** Your **region** (NA / EU / ASIA / OCE / ME)\n\n"
             f"{CASE_WARNING}\n\n"
             "An admin will review and approve your request."
@@ -47,13 +46,8 @@ class AccountLinkView(discord.ui.View):
 
 
 class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
-    usernames = discord.ui.TextInput(
-        label="Krunker Username(s) - CASE-SENSITIVE!!",
-        placeholder="Use commas to separate multiple usernames if necessary",
-        required=True, max_length=200,
-    )
-    primary = discord.ui.TextInput(
-        label="Main Account (put same as above if only one)",
+    username = discord.ui.TextInput(
+        label="Krunker Username - CASE-SENSITIVE!!",
         placeholder="EXACT case, e.g. xWater not xwater",
         required=True, max_length=60,
     )
@@ -69,15 +63,12 @@ class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
             )
             return
 
-        names = [u.strip() for u in self.usernames.value.split(",") if u.strip()]
-        if not names:
-            await interaction.response.send_message("Enter at least one username.", ephemeral=True)
+        username = self.username.value.strip()
+        if not username:
+            await interaction.response.send_message("Enter your username.", ephemeral=True)
             return
-        primary = self.primary.value.strip()
-        if primary.lower() not in [n.lower() for n in names]:
-            names.insert(0, primary)
 
-        rid = await post_link_request(interaction.client, interaction.user.id, names, primary, region)
+        rid = await post_link_request(interaction.client, interaction.user.id, username, region)
         if not rid:
             await interaction.response.send_message(
                 "Couldn't submit - the review channel isn't set. Ask an admin.", ephemeral=True
@@ -89,7 +80,7 @@ class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
 
 
 # ── Admin review ────────────────────────────────────────────────────────────────
-async def post_link_request(bot, user_id: int, usernames: list[str], primary: str, region: str) -> str | None:
+async def post_link_request(bot, user_id: int, username: str, region: str) -> str | None:
     """Post a review embed to the review channel with Accept/Deny buttons."""
     review_ch = bot.get_channel(pug_data["config"].get("review_channel_id"))
     if not review_ch:
@@ -98,16 +89,14 @@ async def post_link_request(bot, user_id: int, usernames: list[str], primary: st
     rid = uuid.uuid4().hex[:8]
     embed = discord.Embed(title="Account Link Request", color=0xFFA500)
     embed.add_field(name="User", value=f"<@{user_id}>", inline=False)
-    embed.add_field(name="Username(s)", value=", ".join(f"`{u}`" for u in usernames), inline=True)
-    embed.add_field(name="Primary", value=f"`{primary}`", inline=True)
+    embed.add_field(name="Username", value=f"`{username}`", inline=True)
     embed.add_field(name="Region", value=region, inline=True)
-    embed.set_footer(text="Usernames are CASE-SENSITIVE - verify they match Krunker exactly.")
+    embed.set_footer(text="Username is CASE-SENSITIVE - verify it matches Krunker exactly.")
 
     msg = await review_ch.send(embed=embed, view=LinkReviewView(rid))
     pug_data["link_requests"][rid] = {
         "user_id": user_id,
-        "usernames": usernames,
-        "primary": primary,
+        "username": username,
         "region": region,
         "review_message_id": msg.id,
         "review_channel_id": review_ch.id,
@@ -142,16 +131,19 @@ class LinkAcceptButton(discord.ui.Button):
         await interaction.response.defer()
 
         uid = int(req["user_id"])
-        applied, skipped = [], []
-        for u in req["usernames"]:
-            owner = username_to_discord(u)
-            if owner is not None and owner != uid:
-                skipped.append(u)
-                continue
-            add_username(uid, u)
-            applied.append(u)
-        if req.get("primary"):
-            set_primary_username(uid, req["primary"])
+        username = req["username"]
+
+        # One account per player; refuse if this username belongs to someone else.
+        owner = username_to_discord(username)
+        if owner is not None and owner != uid:
+            await interaction.followup.send(
+                f"`{username}` is already linked to <@{owner}>. Reset their profile "
+                f"(`/pug-reset-profile`) first, then Accept again.",
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
+        set_username(uid, username)   # replaces any existing account
         set_region(uid, req["region"])
         pug_data["link_requests"].pop(self.rid, None)
         save_pug_data()
@@ -163,10 +155,7 @@ class LinkAcceptButton(discord.ui.Button):
 
         embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
         embed.color = 0x3FB950
-        status = f"Accepted by {interaction.user.mention}"
-        if skipped:
-            status += f"\nSkipped (already linked to someone else): {', '.join(skipped)}"
-        embed.add_field(name="Status", value=status, inline=False)
+        embed.add_field(name="Status", value=f"Accepted by {interaction.user.mention}", inline=False)
         for item in self.view.children:
             item.disabled = True
         try:
@@ -178,7 +167,7 @@ class LinkAcceptButton(discord.ui.Button):
             user = await interaction.client.fetch_user(uid)
             await user.send(
                 f"Your **{BRAND}** account link was **approved**! "
-                f"Linked: {', '.join(applied) or 'none'} ({req['region']}). You can now queue."
+                f"Linked: `{username}` ({req['region']}). You can now queue."
             )
         except discord.HTTPException:
             pass

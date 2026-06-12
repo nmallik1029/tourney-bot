@@ -20,7 +20,7 @@ def build_queue_embed() -> discord.Embed:
     """The persistent embed in #queue, showing who's currently queued."""
     count = len(pug_queue)
     embed = discord.Embed(
-        title="CKL (4v4) Queue",
+        title="Competitive Krunker League (4v4) Queue",
         description=f"**{count}/{MATCH_SIZE}** in queue",
         color=0x5865F2 if count < MATCH_SIZE else 0x3FB950,
     )
