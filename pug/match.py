@@ -252,21 +252,26 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
     category = guild.get_channel(cfg.get("category_id"))
 
     everyone = guild.default_role
-    overwrites = {
+    # Text channel: private to the match players.
+    text_overwrites = {
         everyone: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    # Voice channel: publicly visible (so people see games are live) but nobody can join.
+    vc_overwrites = {
+        everyone: discord.PermissionOverwrite(view_channel=True, connect=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True),
     }
     names = {}
     for pid in players:
         member = guild.get_member(pid)
         names[pid] = primary_username(pid, member.display_name if member else str(pid))
         if member:
-            overwrites[member] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, connect=True
-            )
+            text_overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            vc_overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
 
-    text_ch = await guild.create_text_channel(name, category=category, overwrites=overwrites)
-    checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=overwrites)
+    text_ch = await guild.create_text_channel(name, category=category, overwrites=text_overwrites)
+    checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=vc_overwrites)
 
     match = {
         "key": name,
@@ -356,19 +361,24 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int):
     cfg = pug_data["config"]
     category = guild.get_channel(cfg.get("category_id"))
     everyone = guild.default_role
-    overwrites = {
+    text_overwrites = {
         everyone: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    vc_overwrites = {
+        everyone: discord.PermissionOverwrite(view_channel=True, connect=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True),
     }
     controller = guild.get_member(controller_id)
     names = {controller_id: primary_username(controller_id, controller.display_name if controller else str(controller_id))}
     if controller:
-        overwrites[controller] = discord.PermissionOverwrite(view_channel=True, send_messages=True, connect=True)
+        text_overwrites[controller] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        vc_overwrites[controller] = discord.PermissionOverwrite(view_channel=True, connect=True)
     for i, fid in enumerate(fake_ids, start=1):
         names[fid] = f"Bot{i}"
 
-    text_ch = await guild.create_text_channel(name, category=category, overwrites=overwrites)
-    checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=overwrites)
+    text_ch = await guild.create_text_channel(name, category=category, overwrites=text_overwrites)
+    checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=vc_overwrites)
 
     match = {
         "key": name,
@@ -577,10 +587,20 @@ async def start_draft(match: dict, bot):
             pass
     match["ping_message_id"] = None
 
-    # Captains = top-2 ELO with random tiebreak (shuffle then stable sort by ELO).
+    # Captains: players with the captain-priority role rank first, then by ELO.
+    # Random shuffle first so ties within the same (role, ELO) break randomly.
+    from pug.config import PUG_CAPTAIN_ROLE_ID
+    guild_for_roles = bot.get_guild(match["guild_id"])
+
+    def _has_priority(pid):
+        if not PUG_CAPTAIN_ROLE_ID or not guild_for_roles:
+            return False
+        m = guild_for_roles.get_member(pid)
+        return bool(m and any(r.id == PUG_CAPTAIN_ROLE_ID for r in m.roles))
+
     ordered = match["players"][:]
     random.shuffle(ordered)
-    ordered.sort(key=lambda p: get_elo(p), reverse=True)
+    ordered.sort(key=lambda p: (_has_priority(p), get_elo(p)), reverse=True)
     captains = ordered[:2]
     match["captains"] = captains
     match["teams"] = {captains[0]: [captains[0]], captains[1]: [captains[1]]}
@@ -777,10 +797,11 @@ async def post_host(match: dict, bot):
     match["host_captain_id"] = cap1  # higher ELO captain hosts
     match["region_code"], match["region_name"] = compute_host_region(match)
 
-    # Create team voice channels and move players in
+    # Create team voice channels and move players in.
+    # Publicly visible (spectators can see who's playing) but only team members can join.
     everyone = guild.default_role
     base_overwrites = {
-        everyone: discord.PermissionOverwrite(view_channel=False),
+        everyone: discord.PermissionOverwrite(view_channel=True, connect=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, connect=True),
     }
     for cap, slot in ((cap1, 1), (cap2, 2)):
@@ -804,7 +825,7 @@ async def post_host(match: dict, bot):
     from views.pug_pickban import PugHostView
     view = PugHostView(match["key"])
     msg = await ch.send(
-        f"<@{cap1}>",
+        f"<@{cap1}> <@{cap2}>",
         embed=build_host_embed(match),
         view=view,
         allowed_mentions=discord.AllowedMentions(users=True),
@@ -829,8 +850,8 @@ def build_host_embed(match: dict) -> discord.Embed:
             f"**Region:** {region_name}\n\n"
             f"**Team 1**: {t1}\n"
             f"**Team 2**: {t2}\n\n"
-            f"<@{cap1}>, you're the host. Click below to open your client, then paste "
-            f"the Krunker link back here."
+            f"**Anyone** can host: click below, create the lobby, and paste the Krunker link here. "
+            f"The first valid link is used."
         ),
         color=0xFFA500,
     )

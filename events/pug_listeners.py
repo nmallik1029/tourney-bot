@@ -69,14 +69,8 @@ async def pug_krunker_link(message: discord.Message):
     if not krunker_link:
         return
 
-    host_id = match["host_captain_id"]
-    if message.author.id != host_id and match.get("sim_controller") != message.author.id:
-        await message.delete()
-        await message.channel.send(
-            f"<@{message.author.id}> Only the host can post the game link. Sit tight.",
-            delete_after=8,
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
+    # Anyone in the match can host; only ignore links from non-participants.
+    if message.author.id not in match.get("players", []) and match.get("sim_controller") != message.author.id:
         return
 
     link = krunker_link.group(0)
@@ -110,7 +104,9 @@ async def pug_krunker_link(message: discord.Message):
         )
         return
 
+    # First valid link wins; record who actually hosted (used by Rehost).
     match["host_button_used"] = False
+    match["host_captain_id"] = message.author.id
 
     cap1, cap2 = match["captains"]
     all_ids = match["teams"][cap1] + match["teams"][cap2]

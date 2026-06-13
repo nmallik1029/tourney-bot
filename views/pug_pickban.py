@@ -6,11 +6,11 @@ from views.pug_sub import RequestSubButton
 
 
 async def send_host_launch(interaction: discord.Interaction, match: dict, *, allow_staff=False, rehost=False):
-    """Shared host/rehost flow: give the host the launch links, re-arm link detection."""
-    host_id = match.get("host_captain_id")
-    is_host = interaction.user.id == host_id or match.get("sim_controller") == interaction.user.id
-    if not is_host and not (allow_staff and member_is_pug_staff(interaction.user)):
-        await interaction.response.send_message("Only the assigned host or staff can use this.", ephemeral=True)
+    """Shared host/rehost flow: give the launch links to whoever wants to host, re-arm
+    link detection. Anyone in the match (or staff) can host; the first valid link wins."""
+    is_player = interaction.user.id in match.get("players", []) or match.get("sim_controller") == interaction.user.id
+    if not is_player and not member_is_pug_staff(interaction.user):
+        await interaction.response.send_message("Only players in this match (or staff) can host.", ephemeral=True)
         return
 
     from pug.match import build_host_url
@@ -33,15 +33,13 @@ async def send_host_launch(interaction: discord.Interaction, match: dict, *, all
     match["host_button_used"] = True
     if rehost:
         await interaction.channel.send(
-            f"<@{host_id}>",
             embed=discord.Embed(
                 description=(
                     f"**Rehost requested** by <@{interaction.user.id}>.\n"
-                    f"<@{host_id}>, create a new **{match['map']}** lobby and paste the new link here."
+                    f"Anyone: create a new **{match['map']}** lobby and paste the new link here."
                 ),
                 color=0xFFA500,
             ),
-            allowed_mentions=discord.AllowedMentions(users=True),
         )
     else:
         await interaction.channel.send(
