@@ -22,7 +22,7 @@ def build_account_link_embed() -> discord.Embed:
             "To play pugs you must link your Krunker account. You can link **one** account.\n\n"
             "Click **Link Your Account** below and provide:\n"
             "**1.** Your Krunker **username**\n"
-            "**2.** Your **region** (NA / EU / ASIA / OCE / ME)\n\n"
+            "**2.** Your **region** (NA / EU)\n\n"
             f"{CASE_WARNING}\n\n"
             "An admin will review and approve your request."
         ),
