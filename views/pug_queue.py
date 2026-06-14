@@ -1,6 +1,6 @@
 import discord
 
-from pug.config import MATCH_SIZE, LEADERBOARD_SIZE, BRAND
+from pug.config import MATCH_SIZE, BRAND
 from pug.storage import (
     pug_data,
     pug_queue,
@@ -125,25 +125,83 @@ class QueueView(discord.ui.View):
 
     @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary, custom_id="pug_leaderboard")
     async def leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=build_leaderboard_embed(), ephemeral=True)
+        embed, total_pages = build_leaderboard_embed(0)
+        view = LeaderboardView(0) if total_pages > 1 else None
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-def build_leaderboard_embed(limit: int = LEADERBOARD_SIZE) -> discord.Embed:
+LEADERBOARD_PER_PAGE = 10
+
+
+def _ranked_players() -> list:
+    """Players who have actually played a game (>=1 win or loss), sorted by ELO desc."""
     players = pug_data["players"]
-    ranked = sorted(players.items(), key=lambda kv: kv[1].get("elo", 0), reverse=True)[:limit]
+    played = [
+        (did, p) for did, p in players.items()
+        if (p.get("wins", 0) + p.get("losses", 0)) > 0
+    ]
+    return sorted(played, key=lambda kv: kv[1].get("elo", 0), reverse=True)
+
+
+def build_leaderboard_embed(page: int = 0) -> tuple[discord.Embed, int]:
+    """Return (embed, total_pages) for the given 0-indexed page, 10 players per page."""
+    ranked = _ranked_players()
+    total_pages = max(1, (len(ranked) + LEADERBOARD_PER_PAGE - 1) // LEADERBOARD_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
 
     if not ranked:
-        return discord.Embed(title=f"{BRAND} Leaderboard", description="*No ranked players yet.*", color=0xF1C40F)
+        return (
+            discord.Embed(
+                title=f"{BRAND} Leaderboard",
+                description="*No ranked players yet. Play a game to get on the board.*",
+                color=0xF1C40F,
+            ),
+            total_pages,
+        )
+
+    start = page * LEADERBOARD_PER_PAGE
+    chunk = ranked[start:start + LEADERBOARD_PER_PAGE]
 
     lines = []
-    for i, (did, p) in enumerate(ranked, start=1):
-        rank = f"`{i}.`"
+    for offset, (did, p) in enumerate(chunk):
+        rank = f"`{start + offset + 1}.`"
         w = p.get("wins", 0)
         l = p.get("losses", 0)
         lines.append(f"{rank} <@{did}> | **{p.get('elo', 0)}** ({w}W/{l}L)")
 
-    return discord.Embed(
+    embed = discord.Embed(
         title=f"{BRAND} Leaderboard",
         description="\n".join(lines),
         color=0xF1C40F,
     )
+    embed.set_footer(text=f"Page {page + 1}/{total_pages} | {len(ranked)} ranked players")
+    return embed, total_pages
+
+
+class LeaderboardView(discord.ui.View):
+    """Prev/Next paging for the leaderboard. Short-lived (not persistent across restarts)."""
+
+    def __init__(self, page: int = 0):
+        super().__init__(timeout=180)
+        self.page = page
+        self._sync()
+
+    def _sync(self):
+        _, total_pages = build_leaderboard_embed(self.page)
+        self.total_pages = total_pages
+        self.prev.disabled = self.page <= 0
+        self.next.disabled = self.page >= total_pages - 1
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        self._sync()
+        embed, _ = build_leaderboard_embed(self.page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = self.page + 1
+        self._sync()
+        embed, _ = build_leaderboard_embed(self.page)
+        await interaction.response.edit_message(embed=embed, view=self)

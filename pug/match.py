@@ -520,6 +520,23 @@ async def checkin_loop(match: dict, bot):
                 match["players"].append(npid)
                 nm = guild.get_member(npid) if guild else None
                 match["names"][npid] = primary_username(npid, nm.display_name if nm else str(npid))
+                # Grant the backfilled player access so they can see the channel and
+                # join the check-in VC (the original overwrites only covered the first 8).
+                if nm:
+                    for cid, is_vc in (
+                        (match.get("text_channel_id"), False),
+                        (match.get("checkin_vc_id"), True),
+                    ):
+                        ch = guild.get_channel(cid) if cid else None
+                        if not ch:
+                            continue
+                        try:
+                            if is_vc:
+                                await ch.set_permissions(nm, view_channel=True, connect=True)
+                            else:
+                                await ch.set_permissions(nm, view_channel=True, send_messages=True)
+                        except discord.HTTPException:
+                            pass
 
             from views.pug_queue import refresh_queue_embed
             await refresh_queue_embed(bot)

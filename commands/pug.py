@@ -33,7 +33,7 @@ from pug.storage import (
     get_noadd_info,
     get_user_mod_log,
 )
-from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embed
+from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embed, LeaderboardView
 
 
 # /link
@@ -493,7 +493,9 @@ async def cancel(interaction: discord.Interaction, match_id: str):
 # Public info
 @bot.tree.command(name="leaderboard", description="Show the PUG leaderboard.", guild=guild_object())
 async def leaderboard(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=build_leaderboard_embed(limit=25))
+    embed, total_pages = build_leaderboard_embed(0)
+    view = LeaderboardView(0) if total_pages > 1 else None
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @bot.tree.command(name="live", description="Show all live PUG matches.", guild=guild_object())
