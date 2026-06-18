@@ -20,8 +20,10 @@ def draw_elo_graph(elo_history: list, start_elo: int = 1000) -> io.BytesIO:
     `elo_history` is the list of post-match ELO values (oldest first). A leading
     `start_elo` point is prepended so the very first match still shows a slope.
     """
-    W, H = 820, 320
-    M_L, M_R, M_T, M_B = 60, 24, 26, 40  # margins
+    W, H = 820, 340
+    # Top/bottom margins are roomy so the title row and the "N games" label never
+    # touch the grid lines or the ELO line.
+    M_L, M_R, M_T, M_B = 60, 24, 58, 54  # margins
     img = Image.new("RGBA", (W, H), BG)
     draw = ImageDraw.Draw(img)
 
@@ -66,16 +68,17 @@ def draw_elo_graph(elo_history: list, start_elo: int = 1000) -> io.BytesIO:
         r = 4
         draw.ellipse([px - r, py - r, px + r, py + r], fill=col)
 
-    # Title + current value.
-    draw.text((M_L, 4), "ELO history", font=f_title, fill=TEXT)
+    # Title + current value, centered in the top margin band so they clear the grid.
+    title_y = (M_T - 22) // 2
+    draw.text((M_L, title_y), "ELO history", font=f_title, fill=TEXT)
     cur = series[-1]
     cur_txt = f"Current: {cur}"
     bbox = draw.textbbox((0, 0), cur_txt, font=f_title)
-    draw.text((W - M_R - (bbox[2] - bbox[0]), 4), cur_txt, font=f_title, fill=LINE)
+    draw.text((W - M_R - (bbox[2] - bbox[0]), title_y), cur_txt, font=f_title, fill=LINE)
 
-    # X axis label.
+    # X axis label, placed well below the bottom grid line.
     games_played = max(0, len(series) - 1)
-    draw.text((M_L, H - M_B + 14), f"{games_played} games", font=f_lbl, fill=TEXT)
+    draw.text((M_L, H - M_B + 22), f"{games_played} games", font=f_lbl, fill=TEXT)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
