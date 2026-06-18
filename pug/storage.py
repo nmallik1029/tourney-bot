@@ -202,6 +202,16 @@ def get_flag_count(discord_id: int, reason: str) -> int:
     return p.get("low_kd_flags" if reason == "kd" else "low_obj_flags", 0)
 
 
+def remove_flag(discord_id: int, reason: str, amount: int = 1) -> int:
+    """Decrement a player's flag counter for 'kd' or 'obj' (floored at 0). Pass a large
+    amount (or use clear_flags) to wipe them. Returns the new count."""
+    p = get_player(discord_id)
+    field = "low_kd_flags" if reason == "kd" else "low_obj_flags"
+    p[field] = max(0, p.get(field, 0) - amount)
+    save_pug_data()
+    return p[field]
+
+
 def set_region(discord_id: int, region: str):
     get_player(discord_id)["region"] = (region or "").upper()
     save_pug_data()

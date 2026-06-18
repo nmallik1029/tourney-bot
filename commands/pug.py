@@ -36,6 +36,7 @@ from pug.storage import (
     get_user_mod_log,
     primary_username,
     add_flag,
+    remove_flag,
 )
 from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embed, LeaderboardView
 
@@ -635,6 +636,48 @@ async def flag(interaction: discord.Interaction, user: discord.Member, reason: a
 
     await interaction.response.send_message(
         f"Flagged {user.mention} for **{label}** ({_ordinal(count)} time).",
+        ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.tree.command(name="unflag", description="Remove a flag from a player (staff only).", guild=guild_object())
+@is_pug_staff()
+@app_commands.describe(
+    user="The player to unflag",
+    reason="Which flag type to remove",
+    clear_all="Remove ALL flags of this type instead of just one",
+)
+@app_commands.choices(reason=[
+    app_commands.Choice(name="Low K/D", value="kd"),
+    app_commands.Choice(name="Low OBJ", value="obj"),
+])
+async def unflag(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    reason: app_commands.Choice[str],
+    clear_all: bool = False,
+):
+    label = "low K/D" if reason.value == "kd" else "low OBJ"
+    new_count = remove_flag(user.id, reason.value, amount=10**9 if clear_all else 1)
+
+    log_ch = interaction.client.get_channel(pug_data["config"].get("flags_log_channel_id"))
+    if log_ch:
+        verb = "cleared all" if clear_all else "removed a"
+        embed = discord.Embed(
+            description=(
+                f"{interaction.user.mention} {verb} **{label}** flag from {user.mention}.\n\n"
+                f"They now have **{new_count}** {label} flag(s)."
+            ),
+            color=0x3FB950,
+        )
+        try:
+            await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.HTTPException:
+            pass
+
+    word = "Cleared all" if clear_all else "Removed a"
+    await interaction.response.send_message(
+        f"{word} **{label}** flag from {user.mention}. They now have **{new_count}**.",
         ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
     )
 
