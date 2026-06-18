@@ -50,7 +50,7 @@ ROW2_H = 38
 TOP_H  = 16 + ROW1_H + ROW2_H + 16 + PADDING * 2
 
 
-def draw_scoreboard(
+def _render_scoreboard(
     tournament_name: str,
     map_name: str,
     team1_name: str,
@@ -61,7 +61,10 @@ def draw_scoreboard(
     team2_score: int,
     team2_players: list,
     team2_color: tuple,
-) -> io.BytesIO:
+):
+    """Render the scoreboard and return (PIL image, rows) where rows is a list of
+    {name, y, color} describing each drawn player row (y = row top)."""
+    rows = []
 
     all_players = (
         [(p, team1_color) for p in team1_players] +
@@ -143,8 +146,10 @@ def draw_scoreboard(
     y += HDR_H
 
     for i, (p, color) in enumerate(all_players):
+        row_top = y
         text_y = y + (ROW_H - 22) // 2
         name   = p.get("name", "")
+        rows.append({"name": name, "y": row_top, "color": color})
         kills  = p.get("kills", 0)
         deaths = p.get("deaths", 0)
         obj    = p.get("objective_score", 0)
@@ -163,6 +168,106 @@ def draw_scoreboard(
 
         draw.line([(PADDING, y + ROW_H - 1), (W - PADDING, y + ROW_H - 1)], fill=(80, 80, 100, 100), width=1)
         y += ROW_H
+
+    return img, rows
+
+
+def draw_scoreboard(
+    tournament_name: str,
+    map_name: str,
+    team1_name: str,
+    team1_score: int,
+    team1_players: list,
+    team1_color: tuple,
+    team2_name: str,
+    team2_score: int,
+    team2_players: list,
+    team2_color: tuple,
+) -> io.BytesIO:
+    img, _ = _render_scoreboard(
+        tournament_name, map_name,
+        team1_name, team1_score, team1_players, team1_color,
+        team2_name, team2_score, team2_players, team2_color,
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+# Column pixel ranges used to highlight/magnify a flagged stat.
+_FLAG_COLUMNS = {
+    "kd":  (C_KILLS - 22, C_OBJ - 24),   # kills + deaths cells
+    "obj": (C_OBJ - 22, C_DMG - 24),     # obj cell
+}
+
+
+def draw_flag_scoreboard(
+    tournament_name: str,
+    map_name: str,
+    team1_name: str,
+    team1_score: int,
+    team1_players: list,
+    team1_color: tuple,
+    team2_name: str,
+    team2_score: int,
+    team2_players: list,
+    team2_color: tuple,
+    highlight_name: str,
+    column: str,  # "kd" or "obj"
+) -> io.BytesIO:
+    """Like draw_scoreboard, but dims everything except the flagged player's row and
+    draws a magnified, red-bordered inset over the offending stat cell(s)."""
+    img, rows = _render_scoreboard(
+        tournament_name, map_name,
+        team1_name, team1_score, team1_players, team1_color,
+        team2_name, team2_score, team2_players, team2_color,
+    )
+    img = img.convert("RGBA")
+
+    target = next((r for r in rows if r["name"].strip().lower() == (highlight_name or "").strip().lower()), None)
+    if not target:
+        # Can't locate the row; just return the plain board.
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+    row_top = target["y"]
+    row_bottom = row_top + ROW_H
+
+    # 1) Dim the whole board, then paste the flagged row back at full brightness.
+    bright_row = img.crop((0, row_top, W, row_bottom)).copy()
+    dim = Image.new("RGBA", img.size, (0, 0, 0, 150))
+    img = Image.alpha_composite(img, dim)
+    img.paste(bright_row, (0, row_top))
+
+    draw = ImageDraw.Draw(img)
+    # Subtle highlight bar behind the row.
+    hl = Image.new("RGBA", (W - PADDING * 2, ROW_H), (241, 196, 15, 28))
+    img.alpha_composite(hl, (PADDING, row_top))
+
+    # 2) Magnified inset over the offending cell(s).
+    x1, x2 = _FLAG_COLUMNS.get(column, _FLAG_COLUMNS["kd"])
+    pad = 6
+    cell = img.crop((x1, row_top + pad, x2, row_bottom - pad))
+    scale = 1.6
+    big = cell.resize((int(cell.width * scale), int(cell.height * scale)), Image.LANCZOS)
+
+    cx = (x1 + x2) // 2
+    cy = (row_top + row_bottom) // 2
+    bx = cx - big.width // 2
+    by = cy - big.height // 2
+
+    # Backing plate so the magnified text is readable, then the inset, then a red border.
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([bx - 4, by - 4, bx + big.width + 4, by + big.height + 4], fill=(18, 19, 22, 255))
+    img.alpha_composite(big, (bx, by))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle(
+        [bx - 4, by - 4, bx + big.width + 4, by + big.height + 4],
+        outline=(220, 50, 50), width=3,
+    )
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

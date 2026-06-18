@@ -26,6 +26,8 @@ from pug.storage import (
     primary_username,
     username_to_discord,
     next_queue_number,
+    record_match_stats,
+    add_flag,
 )
 
 
@@ -1078,6 +1080,95 @@ async def _teardown_after(match: dict, bot, delay: int):
 
 
 # webhook result handling
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+async def _detect_and_post_flags(bot, players, winner_krunker, loser_krunker, winner_team_num, map_name):
+    """Flag linked players who went near-double-negative on K/D or contributed under
+    FLAG_OBJ_TEAM_SHARE of their team's OBJ. Posts an embed + magnified scoreboard to
+    the #flags channel and increments the player's flag counter."""
+    from pug.config import FLAG_KD_RATIO, FLAG_KD_MIN_DEATHS, FLAG_OBJ_TEAM_SHARE
+    flags_ch = bot.get_channel(pug_data["config"].get("flags_channel_id"))
+    if not flags_ch:
+        return
+
+    # Team OBJ totals (by payload team number) for the share calculation.
+    team_obj_total: dict = {}
+    for p in players:
+        team_obj_total[p.get("team")] = team_obj_total.get(p.get("team"), 0) + int(p.get("objective_score", 0))
+
+    from scoreboard import draw_flag_scoreboard, RED, WHITE
+    winner_players = sorted([p for p in players if p["team"] == winner_team_num], key=lambda p: p.get("score", 0), reverse=True)
+    loser_players = sorted([p for p in players if p["team"] != winner_team_num], key=lambda p: p.get("score", 0), reverse=True)
+
+    def _board(name, column):
+        return draw_flag_scoreboard(
+            tournament_name=BRAND_FULL, map_name=map_name,
+            team1_name=winner_krunker["name"], team1_score=winner_krunker.get("score", 0),
+            team1_players=winner_players, team1_color=RED,
+            team2_name=loser_krunker["name"], team2_score=loser_krunker.get("score", 0),
+            team2_players=loser_players, team2_color=WHITE,
+            highlight_name=name, column=column,
+        )
+
+    for p in players:
+        name = p.get("name", "")
+        did = username_to_discord(name)
+        if did is None:
+            continue
+        kills = int(p.get("kills", 0))
+        deaths = int(p.get("deaths", 0))
+        obj = int(p.get("objective_score", 0))
+
+        # Low K/D: near double-negative or worse, with a deaths floor so small samples
+        # (e.g. 2-5) don't trip it. kills==0 is caught by the floor alone.
+        if deaths >= FLAG_KD_MIN_DEATHS and deaths >= FLAG_KD_RATIO * kills:
+            count = add_flag(did, "kd")
+            embed = discord.Embed(
+                description=(
+                    f"<@{did}> has been flagged for going **{kills}-{deaths}**.\n\n"
+                    f"This is their **{_ordinal(count)}** time being flagged for a low K/D."
+                ),
+                color=0xDA3633,
+            )
+            embed.set_image(url="attachment://flag.png")
+            try:
+                await flags_ch.send(
+                    embed=embed,
+                    file=discord.File(_board(name, "kd"), filename="flag.png"),
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except discord.HTTPException as e:
+                print(f"[Pug] failed to post kd flag: {e}")
+
+        # Low OBJ: under the team share threshold.
+        team_total = team_obj_total.get(p.get("team"), 0)
+        if team_total > 0 and obj < FLAG_OBJ_TEAM_SHARE * team_total:
+            share = round(100 * obj / team_total)
+            count = add_flag(did, "obj")
+            embed = discord.Embed(
+                description=(
+                    f"<@{did}> has been flagged for getting **{obj} OBJ** ({share}% of their team's OBJ).\n\n"
+                    f"This is their **{_ordinal(count)}** time being flagged for low OBJ."
+                ),
+                color=0xDA3633,
+            )
+            embed.set_image(url="attachment://flag.png")
+            try:
+                await flags_ch.send(
+                    embed=embed,
+                    file=discord.File(_board(name, "obj"), filename="flag.png"),
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except discord.HTTPException as e:
+                print(f"[Pug] failed to post obj flag: {e}")
+
+
 async def try_handle_pug_match_end(payload: dict) -> bool:
     """Called first by the Krunker webhook. Returns True if this was a PUG match."""
     if payload.get("type") != "match_end":
@@ -1161,6 +1252,13 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
     winner_ids = match["teams"][winner_cap]
     loser_ids = match["teams"][loser_cap]
 
+    # Record per-game kills/deaths/obj for every linked player BEFORE apply_match, so
+    # the stats are persisted in the same save as the ELO update.
+    for p in players:
+        did = username_to_discord(p.get("name", ""))
+        if did is not None:
+            record_match_stats(did, p.get("kills", 0), p.get("deaths", 0), p.get("objective_score", 0))
+
     deltas = apply_match(winner_ids, loser_ids)
 
     # Build scoreboard image
@@ -1227,6 +1325,12 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
                 results_msg = await results_ch.send(embed=embed)
         except discord.HTTPException as e:
             print(f"[Pug] failed to post results: {e}")
+
+    # Underperformance flags (private invite server quality control).
+    try:
+        await _detect_and_post_flags(bot, players, winner_krunker, loser_krunker, winner_team_num, map_name)
+    except Exception as e:
+        print(f"[Pug] flag detection failed (non-fatal): {e}")
 
     # Announce in the match channel with a clickable link to the #results scoreboard
     scoreboard_part = ""

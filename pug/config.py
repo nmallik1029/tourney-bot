@@ -45,6 +45,14 @@ VALID_REGIONS = ["NA", "EU", "ASIA", "OCE", "ME"]
 # Leaderboard size for the ephemeral embed
 LEADERBOARD_SIZE = 15
 
+# Auto-flag thresholds for underperformance detection (private invite server).
+# Low K/D: flagged when deaths are at/near double the kills (e.g. 12-33, 22-40, 13-30),
+# with a floor so tiny samples (e.g. 2-5) don't trip it.
+FLAG_KD_RATIO = 1.8        # deaths >= FLAG_KD_RATIO * kills
+FLAG_KD_MIN_DEATHS = 15    # ...and at least this many deaths
+# Low OBJ: flagged when a player contributes under this share of their team's total OBJ.
+FLAG_OBJ_TEAM_SHARE = 0.10
+
 
 def is_pug_admin():
     """Check that the user has PUG_ADMIN_ROLE_ID or is an administrator."""

@@ -34,6 +34,8 @@ def _default_data() -> dict:
             "account_link_message_id": 0,
             "review_channel_id": 0,
             "category_id": 0,
+            "flags_channel_id": 0,
+            "flags_log_channel_id": 0,
         },
         "dashboard_token": "",
     }
@@ -165,7 +167,39 @@ def get_player(discord_id: int) -> dict:
     player.setdefault("losses", 0)
     player.setdefault("usernames", [])
     player.setdefault("region", "")
+    # Per-game stat accumulators + flag counters + ELO history (for /rank).
+    player.setdefault("kills", 0)
+    player.setdefault("deaths", 0)
+    player.setdefault("obj", 0)
+    player.setdefault("games", 0)
+    player.setdefault("elo_history", [])
+    player.setdefault("low_kd_flags", 0)
+    player.setdefault("low_obj_flags", 0)
     return player
+
+
+def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int):
+    """Add one game's kills/deaths/obj to a player's cumulative totals. Does NOT save
+    (the caller batches the save with the ELO update)."""
+    p = get_player(discord_id)
+    p["kills"] += int(kills)
+    p["deaths"] += int(deaths)
+    p["obj"] += int(obj)
+    p["games"] += 1
+
+
+def add_flag(discord_id: int, reason: str) -> int:
+    """Increment a player's flag counter for 'kd' or 'obj' and return the new count."""
+    p = get_player(discord_id)
+    field = "low_kd_flags" if reason == "kd" else "low_obj_flags"
+    p[field] = p.get(field, 0) + 1
+    save_pug_data()
+    return p[field]
+
+
+def get_flag_count(discord_id: int, reason: str) -> int:
+    p = get_player(discord_id)
+    return p.get("low_kd_flags" if reason == "kd" else "low_obj_flags", 0)
 
 
 def set_region(discord_id: int, region: str):

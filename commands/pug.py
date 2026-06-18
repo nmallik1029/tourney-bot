@@ -13,6 +13,8 @@ from pug.config import (
     QUEUE_CHANNEL_NAME,
     RESULTS_CHANNEL_NAME,
     PUG_CATEGORY_NAME,
+    PUG_ADMIN_ROLE_ID,
+    PUG_HELPER_ROLE_ID,
 )
 from pug.storage import (
     pug_data,
@@ -32,6 +34,8 @@ from pug.storage import (
     reset_queue_counter,
     get_noadd_info,
     get_user_mod_log,
+    primary_username,
+    add_flag,
 )
 from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embed, LeaderboardView
 
@@ -134,11 +138,30 @@ async def pug_setup(interaction: discord.Interaction):
             },
         )
 
+    # #flags + #flags-log: private moderation channels (staff only).
+    staff_overwrites = {
+        everyone: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    for rid in (PUG_ADMIN_ROLE_ID, PUG_HELPER_ROLE_ID):
+        role = guild.get_role(rid) if rid else None
+        if role:
+            staff_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    flags_ch = discord.utils.get(guild.text_channels, name="flags")
+    if not flags_ch:
+        flags_ch = await guild.create_text_channel("flags", category=category, overwrites=staff_overwrites)
+    flags_log_ch = discord.utils.get(guild.text_channels, name="flags-log")
+    if not flags_log_ch:
+        flags_log_ch = await guild.create_text_channel("flags-log", category=category, overwrites=staff_overwrites)
+
     # Persist config
     cfg = pug_data["config"]
     cfg["category_id"] = category.id
     cfg["queue_channel_id"] = queue_ch.id
     cfg["results_channel_id"] = results_ch.id
+    cfg["flags_channel_id"] = flags_ch.id
+    cfg["flags_log_channel_id"] = flags_log_ch.id
 
     # Auto-detect an existing #account-link channel (you create this one yourself)
     existing_link = discord.utils.get(guild.text_channels, name="account-link")
@@ -154,6 +177,8 @@ async def pug_setup(interaction: discord.Interaction):
         f"PUG setup complete.\n"
         f"- Queue: {queue_ch.mention}\n"
         f"- Results: {results_ch.mention}\n"
+        f"- Flags: {flags_ch.mention}\n"
+        f"- Flag log: {flags_log_ch.mention}\n"
         f"- Category: **{category.name}**\n"
         f"*(A match voice channel is created automatically when the queue pops.)*",
         ephemeral=True,
@@ -541,4 +566,159 @@ async def remove(interaction: discord.Interaction, user: discord.Member):
     await interaction.response.send_message(
         f"Removed {user.mention} from the queue.", ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.tree.command(name="rank", description="Show a player's PUG rank card.", guild=guild_object())
+@app_commands.describe(user="The player to look up (defaults to you)")
+async def rank(interaction: discord.Interaction, user: discord.Member = None):
+    await interaction.response.defer()
+    target = user or interaction.user
+    p = get_player(target.id)
+
+    username = primary_username(target.id, target.display_name)
+    region = p.get("region") or "Not set"
+    elo = p.get("elo", ELO_START)
+    wins, losses = p.get("wins", 0), p.get("losses", 0)
+    kills, deaths, obj = p.get("kills", 0), p.get("deaths", 0), p.get("obj", 0)
+    games = p.get("games", 0)
+
+    kd = (kills / deaths) if deaths else float(kills)
+    kd_str = f"{kd:.2f}" if deaths else f"{kd:.0f}"
+    avg_obj = round(obj / games) if games else 0
+
+    embed = discord.Embed(title=f"{username} - Rank Card", color=0x5865F2)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="Account", value=username, inline=True)
+    embed.add_field(name="Region", value=region, inline=True)
+    embed.add_field(name="ELO", value=str(elo), inline=True)
+    embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
+    embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
+    embed.add_field(name="Avg. OBJ", value=str(avg_obj), inline=True)
+
+    kd_flags = p.get("low_kd_flags", 0)
+    obj_flags = p.get("low_obj_flags", 0)
+    if kd_flags or obj_flags:
+        embed.add_field(name="Flags", value=f"Low K/D: {kd_flags} | Low OBJ: {obj_flags}", inline=False)
+
+    from pug.graph import draw_elo_graph
+    graph = draw_elo_graph(p.get("elo_history", []), start_elo=ELO_START)
+    embed.set_image(url="attachment://elo.png")
+    await interaction.followup.send(embed=embed, file=discord.File(graph, filename="elo.png"))
+
+
+@bot.tree.command(name="flag", description="Manually flag a player for low K/D or OBJ (staff only).", guild=guild_object())
+@is_pug_staff()
+@app_commands.describe(user="The player to flag", reason="What they're flagged for")
+@app_commands.choices(reason=[
+    app_commands.Choice(name="Low K/D", value="kd"),
+    app_commands.Choice(name="Low OBJ", value="obj"),
+])
+async def flag(interaction: discord.Interaction, user: discord.Member, reason: app_commands.Choice[str]):
+    count = add_flag(user.id, reason.value)
+    from pug.match import _ordinal
+    label = "low K/D" if reason.value == "kd" else "low OBJ"
+
+    log_ch = interaction.client.get_channel(pug_data["config"].get("flags_log_channel_id"))
+    if log_ch:
+        embed = discord.Embed(
+            description=(
+                f"{user.mention} was manually flagged for **{label}** by {interaction.user.mention}.\n\n"
+                f"This is their **{_ordinal(count)}** time being flagged for {label}."
+            ),
+            color=0xDA3633,
+        )
+        try:
+            await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.HTTPException:
+            pass
+
+    await interaction.response.send_message(
+        f"Flagged {user.mention} for **{label}** ({_ordinal(count)} time).",
+        ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.tree.command(name="pug-set-flags-channel", description="Set the channel where auto-flags are posted.", guild=guild_object())
+@is_pug_admin()
+@app_commands.describe(channel="The #flags channel")
+async def pug_set_flags_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    pug_data["config"]["flags_channel_id"] = channel.id
+    save_pug_data()
+    await interaction.response.send_message(
+        f"Underperformance flags will be posted in {channel.mention}.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="pug-set-flags-log-channel", description="Set the channel where manual /flag logs are posted.", guild=guild_object())
+@is_pug_admin()
+@app_commands.describe(channel="The #flags-log channel")
+async def pug_set_flags_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    pug_data["config"]["flags_log_channel_id"] = channel.id
+    save_pug_data()
+    await interaction.response.send_message(
+        f"Manual flag logs will be posted in {channel.mention}.", ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="pug-backfill-elo",
+    description="Rebuild ELO-history graphs from old #results messages (admin only).",
+    guild=guild_object(),
+)
+@is_pug_admin()
+@app_commands.describe(channel="Results channel to scan (defaults to the configured #results)")
+async def pug_backfill_elo(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    import re
+    await interaction.response.defer(ephemeral=True)
+
+    results_ch = channel or interaction.client.get_channel(pug_data["config"].get("results_channel_id"))
+    if not results_ch:
+        await interaction.followup.send(
+            "No results channel set. Run /pug-setup or pass a channel.", ephemeral=True
+        )
+        return
+
+    # Result embeds list each player as: `<@id> | **elo** (delta)` in Winners/Losers fields.
+    line_re = re.compile(r"<@!?(\d+)>\s*\|\s*\*\*(-?\d+)\*\*")
+    histories: dict[int, list[int]] = {}
+    messages_used = 0
+
+    try:
+        async for msg in results_ch.history(limit=None, oldest_first=True):
+            used = False
+            for embed in msg.embeds:
+                for field in embed.fields:
+                    if field.name not in ("Winners", "Losers"):
+                        continue
+                    for did_s, elo_s in line_re.findall(field.value or ""):
+                        histories.setdefault(int(did_s), []).append(int(elo_s))
+                        used = True
+            if used:
+                messages_used += 1
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"I can't read history in {results_ch.mention}. Grant me Read Message History there.",
+            ephemeral=True,
+        )
+        return
+
+    if not histories:
+        await interaction.followup.send(
+            f"Scanned {results_ch.mention} but found no parseable result embeds.", ephemeral=True
+        )
+        return
+
+    # Overwrite each found player's history (idempotent) and cap to the last 100 points.
+    for did, hist in histories.items():
+        get_player(did)["elo_history"] = hist[-100:]
+    save_pug_data()
+
+    total_points = sum(len(h) for h in histories.values())
+    await interaction.followup.send(
+        f"Backfill complete. Parsed **{messages_used}** result messages and rebuilt "
+        f"ELO history for **{len(histories)}** players ({total_points} data points).\n"
+        f"*(Current ELO, wins, and losses were not changed. K/D and OBJ can't be "
+        f"backfilled - they only existed in the scoreboard images.)*",
+        ephemeral=True,
     )
