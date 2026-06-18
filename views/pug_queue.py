@@ -89,13 +89,12 @@ class QueueView(discord.ui.View):
             return
 
         # Don't let players who are already in an active (popped) match re-queue.
-        from pug.storage import pug_matches
-        for m in pug_matches.values():
-            if uid in m.get("players", []):
-                await interaction.response.send_message(
-                    "You're already in an active match.", ephemeral=True
-                )
-                return
+        from pug.storage import in_active_match
+        if in_active_match(uid):
+            await interaction.response.send_message(
+                "You're already in an active match.", ephemeral=True
+            )
+            return
 
         get_player(uid)  # ensure a record exists
         pug_queue.append(uid)

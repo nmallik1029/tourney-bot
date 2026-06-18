@@ -125,6 +125,26 @@ pug_matches: dict[str, dict] = {}  # match_key -> live match state (in-memory)
 sim_players: dict[int, dict] = {}  # fake players for /simulate (never persisted)
 
 
+def in_active_match(discord_id: int) -> dict | None:
+    """Return the live match a user is involved in (any phase/role), else None.
+
+    Checks every place a real player can appear so someone in a game can never
+    sneak back into the queue: the roster, captains, drafted teams, and the
+    simulation controller.
+    """
+    for m in pug_matches.values():
+        if discord_id in m.get("players", []):
+            return m
+        if discord_id in m.get("captains", []):
+            return m
+        if m.get("sim_controller") == discord_id:
+            return m
+        for roster in m.get("teams", {}).values():
+            if discord_id in roster:
+                return m
+    return None
+
+
 # Player helpers
 def get_player(discord_id: int) -> dict:
     """Return the player record, creating a default one at ELO_START if missing.

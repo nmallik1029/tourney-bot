@@ -19,6 +19,10 @@ PUG_EU_ROLE_ID = int(os.environ.get("PUG_EU_ROLE_ID", 0))
 # Captain-priority role: holders are preferred as captains (then ranked by ELO).
 PUG_CAPTAIN_ROLE_ID = int(os.environ.get("PUG_CAPTAIN_ROLE_ID", 0))
 
+# Spectator / caster role: gets VC + channel access (connect/speak/screenshare) on
+# every pug match, like players, but cannot interact with the bot or join the game.
+PUG_SPECTATOR_ROLE_ID = int(os.environ.get("PUG_SPECTATOR_ROLE_ID", 0))
+
 # Match sizing / timing
 MATCH_SIZE = 8          # players per popped match (4v4)
 TEAM_SIZE = 4           # players per team

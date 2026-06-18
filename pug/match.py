@@ -30,6 +30,27 @@ from pug.storage import (
 
 
 # helpers
+def _add_spectator_overwrites(overwrites: dict, guild: discord.Guild, is_vc: bool) -> dict:
+    """Grant staff + spectator/caster roles the SAME access players get on a pug
+    channel: view/connect/speak/screenshare. The bot's own buttons gate by player
+    identity, so these roles still can't draft, vote, or otherwise drive the match."""
+    from pug.config import PUG_ADMIN_ROLE_ID, PUG_HELPER_ROLE_ID, PUG_SPECTATOR_ROLE_ID
+    role_ids = {PUG_ADMIN_ROLE_ID, PUG_HELPER_ROLE_ID, PUG_SPECTATOR_ROLE_ID}
+    for rid in role_ids:
+        if not rid:
+            continue
+        role = guild.get_role(rid)
+        if not role:
+            continue
+        if is_vc:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True, connect=True, speak=True, stream=True
+            )
+        else:
+            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    return overwrites
+
+
 def _all_checked_in(match: dict) -> bool:
     size = match.get("size", MATCH_SIZE)
     return (
@@ -270,6 +291,9 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
             text_overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
             vc_overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
 
+    _add_spectator_overwrites(text_overwrites, guild, is_vc=False)
+    _add_spectator_overwrites(vc_overwrites, guild, is_vc=True)
+
     text_ch = await guild.create_text_channel(name, category=category, overwrites=text_overwrites)
     checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=vc_overwrites)
 
@@ -376,6 +400,9 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int):
         vc_overwrites[controller] = discord.PermissionOverwrite(view_channel=True, connect=True)
     for i, fid in enumerate(fake_ids, start=1):
         names[fid] = f"Bot{i}"
+
+    _add_spectator_overwrites(text_overwrites, guild, is_vc=False)
+    _add_spectator_overwrites(vc_overwrites, guild, is_vc=True)
 
     text_ch = await guild.create_text_channel(name, category=category, overwrites=text_overwrites)
     checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=vc_overwrites)
@@ -827,6 +854,7 @@ async def post_host(match: dict, bot):
             member = guild.get_member(pid)
             if member:
                 ow[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
+        _add_spectator_overwrites(ow, guild, is_vc=True)
         vc = await guild.create_voice_channel(
             f"{match['name']} - Team {slot}", category=category, overwrites=ow
         )

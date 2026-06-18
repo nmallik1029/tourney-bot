@@ -523,3 +523,22 @@ async def live(interaction: discord.Interaction):
 
     embed = discord.Embed(title="Live Matches", description="\n".join(lines), color=0x5865F2)
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="remove", description="Remove a player from the queue (staff only).", guild=guild_object())
+@is_pug_staff()
+@app_commands.describe(user="The member to remove from the queue")
+async def remove(interaction: discord.Interaction, user: discord.Member):
+    if user.id not in pug_queue:
+        await interaction.response.send_message(
+            f"{user.mention} isn't in the queue.", ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return
+    pug_queue.remove(user.id)
+    from views.pug_queue import refresh_queue_embed
+    await refresh_queue_embed(interaction.client)
+    await interaction.response.send_message(
+        f"Removed {user.mention} from the queue.", ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
