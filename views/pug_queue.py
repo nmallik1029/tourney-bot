@@ -166,9 +166,11 @@ STATS = {
     "wl":     ("Win Rate",     _winrate,
                lambda p: f"**{round(_winrate(p)*100)}%** ({p.get('wins',0)}W/{p.get('losses',0)}L)",
                lambda p: f"**{round(_winrate(p)*100)}%**", _played_ranked),
-    "games":  ("Games Played", lambda p: p.get("games", 0),
-               lambda p: f"**{p.get('games',0)}** games",
-               lambda p: f"**{p.get('games',0)}**", _played_stats),
+    # Games played = all-time ranked games (wins + losses), so historical games count
+    # too. (The tracked-only `games` field is just the denominator for averages.)
+    "games":  ("Games Played", lambda p: p.get("wins", 0) + p.get("losses", 0),
+               lambda p: f"**{p.get('wins',0)+p.get('losses',0)}** games",
+               lambda p: f"**{p.get('wins',0)+p.get('losses',0)}**", _played_ranked),
     "rating": ("CKL Rating",   _avg_rating,
                lambda p: f"**{round(_avg_rating(p),2)}** / 10",
                lambda p: f"**{round(_avg_rating(p),2)}**", _played_stats),
@@ -208,14 +210,16 @@ def build_stat_leaderboard(stat_key="elo", start=0, count=10, columns=1):
         lines = [f"`{start+i+1}.` <@{did}> | {full_disp(p)}" for i, (did, p) in enumerate(chunk)]
         embed.description = "\n".join(lines)
     else:
-        per_col = max(1, count // columns)
+        # Spread the page's players evenly across the columns so they all sit on one
+        # row (Discord renders at most 3 inline fields per row) with no stray column.
+        per_col = max(1, (len(chunk) + columns - 1) // columns)
         for c in range(columns):
             seg = chunk[c*per_col:(c+1)*per_col]
             if not seg:
                 break
             base = start + c*per_col
             val = "\n".join(f"`{base+j+1}.` <@{did}> | {short_disp(p)}" for j, (did, p) in enumerate(seg))
-            embed.add_field(name=f"{base+1}-{base+len(seg)}", value=val, inline=True)
+            embed.add_field(name="​", value=val, inline=True)  # blank header (ranks are in the lines)
     return embed, total
 
 
@@ -275,8 +279,8 @@ class LeaderboardView(discord.ui.View):
 
 
 # ── Big board (admin display): 1-50 in 5 columns, persistent, shared state ───────
-BIGBOARD_SIZE = 50
-BIGBOARD_COLUMNS = 5
+BIGBOARD_SIZE = 51       # divisible by 3 columns of 17
+BIGBOARD_COLUMNS = 3
 
 
 def _bigboard_pages(stat_key: str) -> int:
