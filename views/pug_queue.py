@@ -7,6 +7,7 @@ from pug.storage import (
     get_player,
     is_noadded,
     get_noadd_info,
+    top_rated_players,
 )
 
 
@@ -33,6 +34,15 @@ def build_queue_embed() -> discord.Embed:
         embed.add_field(name="Players", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="Players", value="*Queue is empty*", inline=False)
+
+    # Top players by average CKL rating (those who've played at least one game).
+    top = top_rated_players(limit=5)
+    if top:
+        rating_lines = [
+            f"`{i}.` <@{did}> | **{avg}** ({games}g)"
+            for i, (did, avg, games) in enumerate(top, start=1)
+        ]
+        embed.add_field(name="Top CKL Rated", value="\n".join(rating_lines), inline=False)
 
     embed.set_footer(text="Click Join to queue")
     return embed

@@ -597,6 +597,8 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
     embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
     embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
     embed.add_field(name="Avg. OBJ", value=str(avg_obj), inline=True)
+    avg_rating = round(p.get("rating_sum", 0.0) / games, 2) if games else 0.0
+    embed.add_field(name="Avg. CKL Rating", value=f"{avg_rating} / 10", inline=True)
 
     kd_flags = p.get("low_kd_flags", 0)
     obj_flags = p.get("low_obj_flags", 0)

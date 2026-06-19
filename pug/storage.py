@@ -171,7 +171,9 @@ def get_player(discord_id: int) -> dict:
     player.setdefault("kills", 0)
     player.setdefault("deaths", 0)
     player.setdefault("obj", 0)
+    player.setdefault("dmg", 0)
     player.setdefault("games", 0)
+    player.setdefault("rating_sum", 0.0)   # cumulative CKL rating, for the average
     player.setdefault("elo_history", [])
     player.setdefault("peak_elo", player.get("elo", ELO_START))
     player.setdefault("low_kd_flags", 0)
@@ -179,14 +181,35 @@ def get_player(discord_id: int) -> dict:
     return player
 
 
-def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int):
-    """Add one game's kills/deaths/obj to a player's cumulative totals. Does NOT save
-    (the caller batches the save with the ELO update)."""
+def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int, dmg: int):
+    """Add one game's kills/deaths/obj/dmg to a player's cumulative totals and add the
+    game's CKL rating to their rating sum. Does NOT save (the caller batches the save)."""
+    from scoreboard import ckl_rating
     p = get_player(discord_id)
     p["kills"] += int(kills)
     p["deaths"] += int(deaths)
     p["obj"] += int(obj)
+    p["dmg"] = p.get("dmg", 0) + int(dmg)
     p["games"] += 1
+    p["rating_sum"] = p.get("rating_sum", 0.0) + ckl_rating(int(kills), int(deaths), int(obj), int(dmg))
+
+
+def get_avg_rating(discord_id: int) -> float:
+    """A player's average CKL rating across their games (0 if they've played none)."""
+    p = get_player(discord_id)
+    g = p.get("games", 0)
+    return round(p.get("rating_sum", 0.0) / g, 2) if g else 0.0
+
+
+def top_rated_players(limit: int = 5) -> list:
+    """Return [(discord_id, avg_rating, games)] for players with >=1 game, best first."""
+    out = []
+    for did_s, p in pug_data["players"].items():
+        g = p.get("games", 0)
+        if g > 0:
+            out.append((int(did_s), round(p.get("rating_sum", 0.0) / g, 2), g))
+    out.sort(key=lambda t: t[1], reverse=True)
+    return out[:limit]
 
 
 def add_flag(discord_id: int, reason: str) -> int:

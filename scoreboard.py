@@ -14,6 +14,69 @@ def make_font(size):
         except:
             return ImageFont.load_default()
 
+def _clamp(v, lo=0.0, hi=10.0):
+    return max(lo, min(hi, v))
+
+
+def ckl_rating(kills: int, deaths: int, obj: int, dmg: int) -> float:
+    """CKL performance rating on a 0-10 scale.
+
+    Each sub-score is clamped to [0,10] and the weights sum to 1.0, so the weighted
+    average is in [0,10]. A power curve (exponent > 1) is then applied so that you only
+    approach 10 by being elite in *every* category at once - a perfect 10 requires a
+    near-unreachable stat line, while flawed games spread out toward the bottom.
+
+      ~9-10 godlike | ~8 elite | ~6-7 great | ~4-5 average | ~2-3 bad | ~1 awful
+    """
+    kd = kills / deaths if deaths else float(kills)
+    kd_s   = _clamp(5 + (kd - 1) * 4)
+    kill_s = _clamp(kills / 6.5)
+    surv_s = _clamp((60 - deaths) * 0.22)
+    obj_s  = _clamp(obj / 160)
+    dmg_s  = _clamp(dmg / 850)
+    avg = kd_s * 0.15 + kill_s * 0.25 + surv_s * 0.10 + obj_s * 0.15 + dmg_s * 0.35
+    return round(_clamp(10 * (avg / 10) ** 1.15), 1)
+
+
+def _lerp(a, b, f):
+    return tuple(int(a[i] + (b[i] - a[i]) * f) for i in range(3))
+
+
+def rating_color(r: float) -> tuple:
+    """Map a 0-10 rating to red -> yellow -> green."""
+    t = max(0.0, min(1.0, r / 10.0))
+    if t < 0.5:
+        return _lerp((220, 60, 60), (241, 196, 15), t / 0.5)
+    return _lerp((241, 196, 15), (90, 210, 90), (t - 0.5) / 0.5)
+
+
+def ckl_logo(size: int) -> "Image.Image":
+    """A clean, rounded square CKL badge. Uses ckl_logo.png from the project root if
+    present, otherwise draws a white badge with black 'CKL'."""
+    asset = os.path.join(os.path.dirname(__file__), "ckl_logo.png")
+    base = None
+    if os.path.exists(asset):
+        try:
+            base = Image.open(asset).convert("RGBA").resize((size, size), Image.LANCZOS)
+        except Exception:
+            base = None
+    if base is None:
+        base = Image.new("RGBA", (size, size), (245, 245, 245, 255))
+        d = ImageDraw.Draw(base)
+        rad = int(size * 0.22)
+        d.rounded_rectangle([1, 1, size - 2, size - 2], radius=rad,
+                            outline=(20, 20, 25), width=max(2, size // 20))
+        f = make_font(int(size * 0.40))
+        bb = d.textbbox((0, 0), "CKL", font=f)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        d.text(((size - tw) / 2 - bb[0], (size - th) / 2 - bb[1]), "CKL", font=f, fill=(20, 20, 25))
+    # Round the corners regardless of source.
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * 0.22), fill=255)
+    base.putalpha(mask)
+    return base
+
+
 RED      = (220, 50, 50)
 WHITE    = (255, 255, 255)
 GOLD     = (241, 196, 15)
@@ -27,13 +90,16 @@ ROW_H   = 50
 HDR_H   = 36
 MAX_ROWS = 10
 
+# Columns shifted left to make room for the CKL Rating column on the right.
 C_NUM   = PADDING
 C_NAME  = PADDING + 55
-C_SCORE = 560
-C_KILLS = 680
-C_DEATH = 780
-C_OBJ   = 880
-C_DMG   = 1000
+C_SCORE = 515
+C_KILLS = 635
+C_DEATH = 730
+C_OBJ   = 825
+C_DMG   = 935
+RATE_CX = 1095        # center of the CKL Rating column (values + logo header)
+LOGO_SIZE = 44
 
 MAPS_DIR        = os.path.join(os.path.dirname(__file__), "maps")
 BG_IMAGE_PATH   = os.path.join(os.path.dirname(__file__), "scoreboard_bg.png")
@@ -77,6 +143,7 @@ def _render_scoreboard(
 
     max_kills  = max((p.get("kills", 0)           for p, _ in all_players), default=0)
     max_deaths = max((p.get("deaths", 0)          for p, _ in all_players), default=0)
+    min_deaths = min((p.get("deaths", 0)          for p, _ in all_players), default=0)
     max_obj    = max((p.get("objective_score", 0) for p, _ in all_players), default=0)
     max_dmg    = max((p.get("damage_done", 0)     for p, _ in all_players), default=0)
 
@@ -142,6 +209,9 @@ def _render_scoreboard(
     ]
     for cx, label in headers:
         draw.text((cx, y + 8), label, font=f_col, fill=GRAY)
+    # The CKL Rating column header is the logo itself.
+    logo = ckl_logo(LOGO_SIZE)
+    img.alpha_composite(logo, (int(RATE_CX - LOGO_SIZE / 2), y + (HDR_H - LOGO_SIZE) // 2))
     draw.line([(PADDING, y + HDR_H - 1), (W - PADDING, y + HDR_H - 1)], fill=(120, 120, 150, 200), width=1)
     y += HDR_H
 
@@ -162,9 +232,20 @@ def _render_scoreboard(
             draw.text((C_NAME,  text_y), name[:26], font=f_bold, fill=color)
             draw.text((C_SCORE, text_y), str(score),  font=f_reg, fill=WHITE)
             draw.text((C_KILLS, text_y), str(kills),  font=f_reg, fill=GREEN    if kills  == max_kills  and kills  > 0 else WHITE)
-            draw.text((C_DEATH, text_y), str(deaths), font=f_reg, fill=STAT_RED if deaths == max_deaths and deaths > 0 else WHITE)
+            if deaths == min_deaths and min_deaths != max_deaths:
+                death_fill = GREEN          # fewest deaths in the lobby
+            elif deaths == max_deaths and deaths > 0:
+                death_fill = STAT_RED       # most deaths in the lobby
+            else:
+                death_fill = WHITE
+            draw.text((C_DEATH, text_y), str(deaths), font=f_reg, fill=death_fill)
             draw.text((C_OBJ,   text_y), str(obj),    font=f_reg, fill=GREEN    if obj    == max_obj    and obj    > 0 else WHITE)
             draw.text((C_DMG,   text_y), str(dmg),    font=f_reg, fill=GREEN    if dmg    == int(max_dmg) and dmg  > 0 else WHITE)
+
+            rating = ckl_rating(kills, deaths, obj, dmg)
+            rtxt = f"{rating:.1f}"
+            rbb = draw.textbbox((0, 0), rtxt, font=f_bold)
+            draw.text((RATE_CX - (rbb[2] - rbb[0]) // 2, text_y), rtxt, font=f_bold, fill=rating_color(rating))
 
         draw.line([(PADDING, y + ROW_H - 1), (W - PADDING, y + ROW_H - 1)], fill=(80, 80, 100, 100), width=1)
         y += ROW_H

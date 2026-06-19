@@ -1257,7 +1257,8 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
     for p in players:
         did = username_to_discord(p.get("name", ""))
         if did is not None:
-            record_match_stats(did, p.get("kills", 0), p.get("deaths", 0), p.get("objective_score", 0))
+            record_match_stats(did, p.get("kills", 0), p.get("deaths", 0),
+                                p.get("objective_score", 0), p.get("damage_done", 0))
 
     deltas = apply_match(winner_ids, loser_ids)
 
