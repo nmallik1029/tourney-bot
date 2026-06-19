@@ -41,7 +41,7 @@ from pug.storage import (
 from views.pug_queue import (
     QueueView,
     build_queue_embed,
-    build_stat_leaderboard,
+    build_normal_leaderboard,
     LeaderboardView,
     build_bigboard_embed,
     BigBoardView,
@@ -526,8 +526,8 @@ async def cancel(interaction: discord.Interaction, match_id: str):
 # Public info
 @bot.tree.command(name="leaderboard", description="Show the PUG leaderboard (top 10, switch stats).", guild=guild_object())
 async def leaderboard(interaction: discord.Interaction):
-    embed, _ = build_stat_leaderboard("elo", 0, 10, columns=1)
-    await interaction.response.send_message(embed=embed, view=LeaderboardView("elo"))
+    embed, _, _ = build_normal_leaderboard("elo", 0)
+    await interaction.response.send_message(embed=embed, view=LeaderboardView("elo", 0))
 
 
 @bot.tree.command(

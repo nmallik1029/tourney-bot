@@ -125,8 +125,8 @@ class QueueView(discord.ui.View):
 
     @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary, custom_id="pug_leaderboard")
     async def leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed, _ = build_stat_leaderboard("elo", 0, 10, columns=1)
-        await interaction.response.send_message(embed=embed, view=LeaderboardView("elo"), ephemeral=True)
+        embed, _, _ = build_normal_leaderboard("elo", 0)
+        await interaction.response.send_message(embed=embed, view=LeaderboardView("elo", 0), ephemeral=True)
 
 
 # ── Multi-stat leaderboard ───────────────────────────────────────────────────────
@@ -219,24 +219,59 @@ def build_stat_leaderboard(stat_key="elo", start=0, count=10, columns=1):
     return embed, total
 
 
-# ── Normal leaderboard (anyone): top 10, switchable stat ─────────────────────────
-class LeaderboardStatSelect(discord.ui.Select):
-    def __init__(self, current="elo"):
-        options = [discord.SelectOption(label=STATS[k][0], value=k, default=(k == current)) for k in STAT_ORDER]
-        super().__init__(placeholder="View another stat...", options=options)
+SHORT_LABELS = {"elo": "ELO", "wl": "W/L", "games": "Games", "rating": "Rating", "kd": "K/D", "obj": "OBJ"}
+NORMAL_PER_PAGE = 10
 
-    async def callback(self, interaction: discord.Interaction):
-        stat = self.values[0]
-        embed, _ = build_stat_leaderboard(stat, 0, 10, columns=1)
-        await interaction.response.edit_message(embed=embed, view=LeaderboardView(stat))
+
+# ── Normal leaderboard (anyone): top 10 per page, compact stat buttons + paging ──
+def build_normal_leaderboard(stat="elo", page=0):
+    """Returns (embed, clamped_page, total_pages) for the 10-per-page leaderboard."""
+    if stat not in STATS:
+        stat = "elo"
+    total = len(_ranked_for_stat(stat))
+    pages = max(1, (total + NORMAL_PER_PAGE - 1) // NORMAL_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    embed, _ = build_stat_leaderboard(stat, page * NORMAL_PER_PAGE, NORMAL_PER_PAGE, columns=1)
+    embed.set_footer(text=f"Page {page+1}/{pages} | {total} ranked players")
+    return embed, page, pages
+
+
+def _next_stat(stat):
+    return STAT_ORDER[(STAT_ORDER.index(stat) + 1) % len(STAT_ORDER)]
 
 
 class LeaderboardView(discord.ui.View):
-    """Top-10 leaderboard with a stat switcher. Ephemeral, short-lived."""
+    """Ephemeral leaderboard: one stat-cycle button + Prev/Next paging (single row)."""
 
-    def __init__(self, current="elo"):
+    def __init__(self, stat="elo", page=0):
         super().__init__(timeout=180)
-        self.add_item(LeaderboardStatSelect(current))
+        self.stat = stat if stat in STATS else "elo"
+        _, self.page, self.pages = build_normal_leaderboard(self.stat, page)
+
+        self.add_item(self._cycle_btn())
+        self.add_item(self._page_btn("◀ Prev", -1, self.page <= 0))
+        self.add_item(self._page_btn("Next ▶", +1, self.page >= self.pages - 1))
+
+    def _cycle_btn(self):
+        btn = discord.ui.Button(label=f"Stat: {SHORT_LABELS[self.stat]}", style=discord.ButtonStyle.primary, row=0)
+        nxt = _next_stat(self.stat)
+
+        async def cb(interaction: discord.Interaction):
+            embed, _, _ = build_normal_leaderboard(nxt, 0)
+            await interaction.response.edit_message(embed=embed, view=LeaderboardView(nxt, 0))
+
+        btn.callback = cb
+        return btn
+
+    def _page_btn(self, label, delta, disabled):
+        btn = discord.ui.Button(label=label, row=0, style=discord.ButtonStyle.secondary, disabled=disabled)
+
+        async def cb(interaction: discord.Interaction):
+            embed, new_page, _ = build_normal_leaderboard(self.stat, self.page + delta)
+            await interaction.response.edit_message(embed=embed, view=LeaderboardView(self.stat, new_page))
+
+        btn.callback = cb
+        return btn
 
 
 # ── Big board (admin display): 1-50 in 5 columns, persistent, shared state ───────
@@ -259,7 +294,7 @@ def build_bigboard_embed() -> discord.Embed:
     embed, total = build_stat_leaderboard(stat, start=page*BIGBOARD_SIZE, count=BIGBOARD_SIZE, columns=BIGBOARD_COLUMNS)
     lo = page*BIGBOARD_SIZE + 1
     hi = min(total, (page+1)*BIGBOARD_SIZE)
-    embed.set_footer(text=f"Ranks {lo}-{hi} of {total} | Page {page+1}/{pages} | use the menu to change stat")
+    embed.set_footer(text=f"Ranks {lo}-{hi} of {total} | Page {page+1}/{pages}")
     return embed
 
 
@@ -279,38 +314,46 @@ async def refresh_bigboard(bot):
         pass
 
 
-class BigBoardStatSelect(discord.ui.Select):
+class _BigCycleButton(discord.ui.Button):
+    """Persistent single stat-cycle button for the big board (state lives in config)."""
+
     def __init__(self):
         cur = pug_data["config"].get("bigboard_stat", "elo")
-        options = [discord.SelectOption(label=STATS[k][0], value=k, default=(k == cur)) for k in STAT_ORDER]
-        super().__init__(placeholder="Select a stat", options=options, custom_id="bigboard_stat", row=0)
+        if cur not in STATS:
+            cur = "elo"
+        super().__init__(label=f"Stat: {SHORT_LABELS[cur]}", style=discord.ButtonStyle.primary,
+                         custom_id="bb_cycle", row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        pug_data["config"]["bigboard_stat"] = self.values[0]
+        cur = pug_data["config"].get("bigboard_stat", "elo")
+        if cur not in STATS:
+            cur = "elo"
+        pug_data["config"]["bigboard_stat"] = _next_stat(cur)
         pug_data["config"]["bigboard_page"] = 0
         save_pug_data()
         await interaction.response.edit_message(embed=build_bigboard_embed(), view=BigBoardView())
 
 
+class _BigPageButton(discord.ui.Button):
+    def __init__(self, label, custom_id, delta):
+        super().__init__(label=label, row=0, style=discord.ButtonStyle.secondary, custom_id=custom_id)
+        self.delta = delta
+
+    async def callback(self, interaction: discord.Interaction):
+        cfg = pug_data["config"]
+        stat = cfg.get("bigboard_stat", "elo")
+        new_page = cfg.get("bigboard_page", 0) + self.delta
+        cfg["bigboard_page"] = max(0, min(new_page, _bigboard_pages(stat) - 1))
+        save_pug_data()
+        await interaction.response.edit_message(embed=build_bigboard_embed(), view=BigBoardView())
+
+
 class BigBoardView(discord.ui.View):
-    """Persistent big leaderboard: stat menu + 50-at-a-time paging. State is shared
-    (stored in config), so the whole channel sees the same view."""
+    """Persistent big leaderboard: one stat-cycle button + 50-at-a-time paging. State is
+    shared (stored in config), so the whole channel sees the same view."""
 
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(BigBoardStatSelect())
-
-    @discord.ui.button(label="Prev 50", style=discord.ButtonStyle.secondary, custom_id="bigboard_prev", row=1)
-    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cfg = pug_data["config"]
-        cfg["bigboard_page"] = max(0, cfg.get("bigboard_page", 0) - 1)
-        save_pug_data()
-        await interaction.response.edit_message(embed=build_bigboard_embed(), view=BigBoardView())
-
-    @discord.ui.button(label="Next 50", style=discord.ButtonStyle.secondary, custom_id="bigboard_next", row=1)
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cfg = pug_data["config"]
-        stat = cfg.get("bigboard_stat", "elo")
-        cfg["bigboard_page"] = min(_bigboard_pages(stat) - 1, cfg.get("bigboard_page", 0) + 1)
-        save_pug_data()
-        await interaction.response.edit_message(embed=build_bigboard_embed(), view=BigBoardView())
+        self.add_item(_BigCycleButton())
+        self.add_item(_BigPageButton("◀ Prev 50", "bigboard_prev", -1))
+        self.add_item(_BigPageButton("Next 50 ▶", "bigboard_next", +1))
