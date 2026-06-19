@@ -1333,6 +1333,13 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
     except Exception as e:
         print(f"[Pug] flag detection failed (non-fatal): {e}")
 
+    # Keep the standing big-board display current.
+    try:
+        from views.pug_queue import refresh_bigboard
+        await refresh_bigboard(bot)
+    except Exception as e:
+        print(f"[Pug] bigboard refresh failed (non-fatal): {e}")
+
     # Announce in the match channel with a clickable link to the #results scoreboard
     scoreboard_part = ""
     if results_msg:

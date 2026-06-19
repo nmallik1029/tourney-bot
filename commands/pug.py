@@ -38,7 +38,14 @@ from pug.storage import (
     add_flag,
     remove_flag,
 )
-from views.pug_queue import QueueView, build_queue_embed, build_leaderboard_embed, LeaderboardView
+from views.pug_queue import (
+    QueueView,
+    build_queue_embed,
+    build_stat_leaderboard,
+    LeaderboardView,
+    build_bigboard_embed,
+    BigBoardView,
+)
 
 
 # /link
@@ -517,11 +524,31 @@ async def cancel(interaction: discord.Interaction, match_id: str):
 
 
 # Public info
-@bot.tree.command(name="leaderboard", description="Show the PUG leaderboard.", guild=guild_object())
+@bot.tree.command(name="leaderboard", description="Show the PUG leaderboard (top 10, switch stats).", guild=guild_object())
 async def leaderboard(interaction: discord.Interaction):
-    embed, total_pages = build_leaderboard_embed(0)
-    view = LeaderboardView(0) if total_pages > 1 else None
-    await interaction.response.send_message(embed=embed, view=view)
+    embed, _ = build_stat_leaderboard("elo", 0, 10, columns=1)
+    await interaction.response.send_message(embed=embed, view=LeaderboardView("elo"))
+
+
+@bot.tree.command(
+    name="pug-bigboard",
+    description="Post the big standing leaderboard display in this channel (admin).",
+    guild=guild_object(),
+)
+@is_pug_admin()
+async def pug_bigboard(interaction: discord.Interaction):
+    cfg = pug_data["config"]
+    cfg.setdefault("bigboard_stat", "elo")
+    cfg["bigboard_page"] = 0
+    msg = await interaction.channel.send(embed=build_bigboard_embed(), view=BigBoardView())
+    cfg["bigboard_channel_id"] = interaction.channel.id
+    cfg["bigboard_message_id"] = msg.id
+    save_pug_data()
+    await interaction.response.send_message(
+        f"Big leaderboard posted in {interaction.channel.mention}. "
+        f"It updates automatically after each match; anyone can switch the stat or page.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="live", description="Show all live PUG matches.", guild=guild_object())

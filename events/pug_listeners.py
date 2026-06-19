@@ -6,7 +6,7 @@ from core.bot_instance import bot
 from core.config import SERVER_ID
 from pug.storage import pug_matches, pug_data
 from pug.match import get_match_for_channel, mark_checked_in, cleanup_orphaned_channels, reset_queue_on_start
-from views.pug_queue import QueueView
+from views.pug_queue import QueueView, BigBoardView
 from views.pug_link import AccountLinkView, LinkReviewView
 
 _did_startup = False
@@ -19,6 +19,7 @@ async def pug_on_ready():
     global _did_startup
     bot.add_view(QueueView())
     bot.add_view(AccountLinkView())
+    bot.add_view(BigBoardView())
     # Re-register review buttons for any pending account-link requests
     for rid in list(pug_data.get("link_requests", {}).keys()):
         bot.add_view(LinkReviewView(rid))

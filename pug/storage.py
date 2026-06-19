@@ -36,6 +36,10 @@ def _default_data() -> dict:
             "category_id": 0,
             "flags_channel_id": 0,
             "flags_log_channel_id": 0,
+            "bigboard_channel_id": 0,
+            "bigboard_message_id": 0,
+            "bigboard_stat": "elo",
+            "bigboard_page": 0,
         },
         "dashboard_token": "",
     }
