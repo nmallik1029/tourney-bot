@@ -39,7 +39,7 @@ def build_queue_embed() -> discord.Embed:
     top = top_rated_players(limit=5)
     if top:
         rating_lines = [
-            f"`{i}.` <@{did}> | **{avg}** ({games}g)"
+            f"`{i}.` <@{did}> | **{avg}**"
             for i, (did, avg, games) in enumerate(top, start=1)
         ]
         embed.add_field(name="Top CKL Rated", value="\n".join(rating_lines), inline=False)
