@@ -173,6 +173,7 @@ def get_player(discord_id: int) -> dict:
     player.setdefault("obj", 0)
     player.setdefault("games", 0)
     player.setdefault("elo_history", [])
+    player.setdefault("peak_elo", player.get("elo", ELO_START))
     player.setdefault("low_kd_flags", 0)
     player.setdefault("low_obj_flags", 0)
     return player

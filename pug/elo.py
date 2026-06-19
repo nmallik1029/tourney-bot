@@ -41,14 +41,15 @@ def apply_match(winner_ids: list[int], loser_ids: list[int]) -> dict[int, int]:
         player["losses"] += 1
         deltas[pid] = -lose_delta
 
-    # Record an ELO history point for everyone (for the /rank graph). Cap the history
-    # so the persisted blob can't grow without bound.
+    # Record an ELO history point for everyone (for the /rank graph) and update each
+    # player's peak ELO. Cap the history so the persisted blob can't grow unbounded.
     for pid in list(winner_ids) + list(loser_ids):
         player = get_player(pid)
         hist = player.setdefault("elo_history", [])
         hist.append(player["elo"])
         if len(hist) > 100:
             del hist[:-100]
+        player["peak_elo"] = max(player.get("peak_elo", player["elo"]), player["elo"])
 
     save_pug_data()
     return deltas

@@ -587,12 +587,13 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
     kd = (kills / deaths) if deaths else float(kills)
     kd_str = f"{kd:.2f}" if deaths else f"{kd:.0f}"
     avg_obj = round(obj / games) if games else 0
+    peak = max(p.get("peak_elo", elo), elo, *(p.get("elo_history") or [elo]))
 
-    embed = discord.Embed(title=f"{username} - Rank Card", color=0x5865F2)
+    embed = discord.Embed(title=f"Ranked Data for {username}", color=0x5865F2)
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.add_field(name="Account", value=username, inline=True)
     embed.add_field(name="Region", value=region, inline=True)
-    embed.add_field(name="ELO", value=str(elo), inline=True)
+    embed.add_field(name="ELO (PEAK)", value=f"{elo}  ({peak})", inline=True)
     embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
     embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
     embed.add_field(name="Avg. OBJ", value=str(avg_obj), inline=True)
@@ -753,8 +754,11 @@ async def pug_backfill_elo(interaction: discord.Interaction, channel: discord.Te
         return
 
     # Overwrite each found player's history (idempotent) and cap to the last 100 points.
+    # Also recover peak ELO as the highest point ever seen.
     for did, hist in histories.items():
-        get_player(did)["elo_history"] = hist[-100:]
+        player = get_player(did)
+        player["elo_history"] = hist[-100:]
+        player["peak_elo"] = max(player.get("peak_elo", 0), max(hist))
     save_pug_data()
 
     total_points = sum(len(h) for h in histories.values())
