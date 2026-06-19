@@ -28,20 +28,24 @@ def build_queue_embed() -> discord.Embed:
 
     # Players (left column).
     if pug_queue:
-        lines = []
+        player_lines = []
         for i, pid in enumerate(pug_queue, start=1):
             names = ", ".join(get_player(pid)["usernames"]) or "-"
-            lines.append(f"`{i}.` <@{pid}> | {names}")
-        embed.add_field(name="Players", value="\n".join(lines), inline=True)
+            player_lines.append(f"`{i}.` <@{pid}> | {names}")
     else:
-        embed.add_field(name="Players", value="*Queue is empty*", inline=True)
+        player_lines = ["*Queue is empty*"]
 
     # Top players by average CKL rating (right column).
     top = top_rated_players(limit=5)
-    rating_value = "\n".join(
+    rating_lines = [
         f"`{i}.` <@{did}> | **{avg}**" for i, (did, avg, games) in enumerate(top, start=1)
-    ) if top else "*No rated players yet*"
-    embed.add_field(name="Top CKL Rated", value=rating_value, inline=True)
+    ] if top else ["*No rated players yet*"]
+
+    # Three inline fields render side by side: Players | divider | Top CKL Rated.
+    divider_height = max(len(player_lines), len(rating_lines))
+    embed.add_field(name="Players", value="\n".join(player_lines), inline=True)
+    embed.add_field(name="​", value="\n".join("│" for _ in range(divider_height)), inline=True)
+    embed.add_field(name="Top CKL Rated", value="\n".join(rating_lines), inline=True)
 
     embed.set_footer(text="Click Join to queue")
     return embed
