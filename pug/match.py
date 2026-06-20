@@ -1254,11 +1254,12 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
 
     # Record per-game kills/deaths/obj for every linked player BEFORE apply_match, so
     # the stats are persisted in the same save as the ELO update.
+    match_rounds = int(winner_krunker.get("score", 0)) + int(loser_krunker.get("score", 0))
     for p in players:
         did = username_to_discord(p.get("name", ""))
         if did is not None:
             record_match_stats(did, p.get("kills", 0), p.get("deaths", 0),
-                                p.get("objective_score", 0), p.get("damage_done", 0))
+                                p.get("objective_score", 0), p.get("damage_done", 0), match_rounds)
 
     deltas = apply_match(winner_ids, loser_ids)
 

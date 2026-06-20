@@ -18,24 +18,46 @@ def _clamp(v, lo=0.0, hi=10.0):
     return max(lo, min(hi, v))
 
 
-def ckl_rating(kills: int, deaths: int, obj: int, dmg: int) -> float:
+# Maps the raw weighted average -> final score. Lifts the 7-9 band so good games feel
+# rewarding, but the last stretch (9.6 -> 10) stays steep so 9.7-10 is reserved for
+# near-flawless per-round lines.
+_RATING_ANCHORS = [(0, 0), (3, 2), (5, 5), (6.5, 7), (8, 8.5), (9, 9.2), (9.85, 9.6), (10, 10)]
+
+
+def _rating_curve(x: float) -> float:
+    a = _RATING_ANCHORS
+    if x <= a[0][0]:
+        return a[0][1]
+    if x >= a[-1][0]:
+        return a[-1][1]
+    for i in range(len(a) - 1):
+        x0, y0 = a[i]
+        x1, y1 = a[i + 1]
+        if x0 <= x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return x
+
+
+def ckl_rating(kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2) -> float:
     """CKL performance rating on a 0-10 scale.
 
-    Each sub-score is clamped to [0,10] and the weights sum to 1.0, so the weighted
-    average is in [0,10]. A power curve (exponent > 1) is then applied so that you only
-    approach 10 by being elite in *every* category at once - a perfect 10 requires a
-    near-unreachable stat line, while flawed games spread out toward the bottom.
+    Counting stats are normalized PER ROUND (rounds = sum of both teams' map scores, e.g.
+    2-0 -> 2, 2-1 -> 3) so a longer BO3 isn't rewarded just for accumulating more. Each
+    sub-score is clamped to [0,10]; the weighted average is mapped through a curve that
+    makes 7-9 attainable while keeping 9.7-10 elite.
 
-      ~9-10 godlike | ~8 elite | ~6-7 great | ~4-5 average | ~2-3 bad | ~1 awful
+      ~9-10 godlike | ~8 elite | ~7 great | ~5 average | ~3-4 bad | ~1 awful
     """
+    r = max(1, rounds)
+    kpr, dpr, opr, dmgpr = kills / r, deaths / r, obj / r, dmg / r
     kd = kills / deaths if deaths else float(kills)
-    kd_s   = _clamp(5 + (kd - 1) * 4)
-    kill_s = _clamp(kills / 6.5)
-    surv_s = _clamp((60 - deaths) * 0.22)
-    obj_s  = _clamp(obj / 160)
-    dmg_s  = _clamp(dmg / 850)
+    kd_s   = _clamp(5 + (kd - 1) * 4)   # K/D is a ratio, already round-independent
+    kill_s = _clamp(kpr / 2.3)
+    surv_s = _clamp((19 - dpr) * 0.85)
+    obj_s  = _clamp(opr / 58)
+    dmg_s  = _clamp(dmgpr / 270)
     avg = kd_s * 0.15 + kill_s * 0.25 + surv_s * 0.10 + obj_s * 0.15 + dmg_s * 0.35
-    return round(_clamp(10 * (avg / 10) ** 1.15), 1)
+    return round(_rating_curve(avg), 1)
 
 
 def _lerp(a, b, f):
@@ -51,30 +73,35 @@ def rating_color(r: float) -> tuple:
 
 
 def ckl_logo(size: int) -> "Image.Image":
-    """A clean, rounded square CKL badge. Uses ckl_logo.png from the project root if
-    present, otherwise draws a white badge with black 'CKL'."""
+    """A clean, rounded-square CKL badge. Uses ckl_logo.png from the project root if
+    present, otherwise draws a white badge with padded black 'CKL'. Rendered at 4x and
+    downscaled for smooth edges."""
     asset = os.path.join(os.path.dirname(__file__), "ckl_logo.png")
-    base = None
     if os.path.exists(asset):
         try:
             base = Image.open(asset).convert("RGBA").resize((size, size), Image.LANCZOS)
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * 0.24), fill=255)
+            base.putalpha(mask)
+            return base
         except Exception:
-            base = None
-    if base is None:
-        base = Image.new("RGBA", (size, size), (245, 245, 245, 255))
-        d = ImageDraw.Draw(base)
-        rad = int(size * 0.22)
-        d.rounded_rectangle([1, 1, size - 2, size - 2], radius=rad,
-                            outline=(20, 20, 25), width=max(2, size // 20))
-        f = make_font(int(size * 0.40))
-        bb = d.textbbox((0, 0), "CKL", font=f)
-        tw, th = bb[2] - bb[0], bb[3] - bb[1]
-        d.text(((size - tw) / 2 - bb[0], (size - th) / 2 - bb[1]), "CKL", font=f, fill=(20, 20, 25))
-    # Round the corners regardless of source.
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * 0.22), fill=255)
-    base.putalpha(mask)
-    return base
+            pass
+
+    # Supersample for crisp, anti-aliased edges and text.
+    S = size * 4
+    base = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(base)
+    rad = int(S * 0.24)
+    pad = max(2, S // 28)
+    # White rounded plate with a dark outline.
+    d.rounded_rectangle([pad, pad, S - pad - 1, S - pad - 1], radius=rad,
+                        fill=(247, 247, 249, 255), outline=(22, 23, 27), width=max(3, S // 26))
+    # Padded, centered "CKL".
+    f = make_font(int(S * 0.30))
+    bb = d.textbbox((0, 0), "CKL", font=f)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    d.text(((S - tw) / 2 - bb[0], (S - th) / 2 - bb[1]), "CKL", font=f, fill=(22, 23, 27))
+    return base.resize((size, size), Image.LANCZOS)
 
 
 RED      = (220, 50, 50)
@@ -99,7 +126,7 @@ C_DEATH = 730
 C_OBJ   = 825
 C_DMG   = 935
 RATE_CX = 1095        # center of the CKL Rating column (values + logo header)
-LOGO_SIZE = 44
+LOGO_SIZE = 40
 
 MAPS_DIR        = os.path.join(os.path.dirname(__file__), "maps")
 BG_IMAGE_PATH   = os.path.join(os.path.dirname(__file__), "scoreboard_bg.png")
@@ -131,6 +158,7 @@ def _render_scoreboard(
     """Render the scoreboard and return (PIL image, rows) where rows is a list of
     {name, y, color} describing each drawn player row (y = row top)."""
     rows = []
+    rounds = max(1, int(team1_score or 0) + int(team2_score or 0))  # BO3: 2-0 -> 2, 2-1 -> 3
 
     all_players = (
         [(p, team1_color) for p in team1_players] +
@@ -209,9 +237,10 @@ def _render_scoreboard(
     ]
     for cx, label in headers:
         draw.text((cx, y + 8), label, font=f_col, fill=GRAY)
-    # The CKL Rating column header is the logo itself.
-    logo = ckl_logo(LOGO_SIZE)
-    img.alpha_composite(logo, (int(RATE_CX - LOGO_SIZE / 2), y + (HDR_H - LOGO_SIZE) // 2))
+    # CKL Rating column header - plain text, same font/color/baseline as the other headers.
+    rate_hdr = "CKL Rating"
+    rbb = draw.textbbox((0, 0), rate_hdr, font=f_col)
+    draw.text((RATE_CX - (rbb[2] - rbb[0]) // 2, y + 8), rate_hdr, font=f_col, fill=GRAY)
     draw.line([(PADDING, y + HDR_H - 1), (W - PADDING, y + HDR_H - 1)], fill=(120, 120, 150, 200), width=1)
     y += HDR_H
 
@@ -242,7 +271,7 @@ def _render_scoreboard(
             draw.text((C_OBJ,   text_y), str(obj),    font=f_reg, fill=GREEN    if obj    == max_obj    and obj    > 0 else WHITE)
             draw.text((C_DMG,   text_y), str(dmg),    font=f_reg, fill=GREEN    if dmg    == int(max_dmg) and dmg  > 0 else WHITE)
 
-            rating = ckl_rating(kills, deaths, obj, dmg)
+            rating = ckl_rating(kills, deaths, obj, dmg, rounds)
             rtxt = f"{rating:.1f}"
             rbb = draw.textbbox((0, 0), rtxt, font=f_bold)
             draw.text((RATE_CX - (rbb[2] - rbb[0]) // 2, text_y), rtxt, font=f_bold, fill=rating_color(rating))

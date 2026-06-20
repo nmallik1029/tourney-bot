@@ -185,9 +185,10 @@ def get_player(discord_id: int) -> dict:
     return player
 
 
-def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int, dmg: int):
+def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2):
     """Add one game's kills/deaths/obj/dmg to a player's cumulative totals and add the
-    game's CKL rating to their rating sum. Does NOT save (the caller batches the save)."""
+    game's CKL rating (round-normalized) to their rating sum. Does NOT save (the caller
+    batches the save)."""
     from scoreboard import ckl_rating
     p = get_player(discord_id)
     p["kills"] += int(kills)
@@ -195,7 +196,7 @@ def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int, dmg: 
     p["obj"] += int(obj)
     p["dmg"] = p.get("dmg", 0) + int(dmg)
     p["games"] += 1
-    p["rating_sum"] = p.get("rating_sum", 0.0) + ckl_rating(int(kills), int(deaths), int(obj), int(dmg))
+    p["rating_sum"] = p.get("rating_sum", 0.0) + ckl_rating(int(kills), int(deaths), int(obj), int(dmg), rounds)
 
 
 def get_avg_rating(discord_id: int) -> float:
