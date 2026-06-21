@@ -37,6 +37,7 @@ from pug.storage import (
     primary_username,
     add_flag,
     remove_flag,
+    reset_rating,
 )
 from views.pug_queue import (
     QueueView,
@@ -465,6 +466,22 @@ async def pug_reset_profile(interaction: discord.Interaction, user: discord.Memb
     )
 
 
+@bot.tree.command(
+    name="pug-reset-rating",
+    description="Reset a player's average CKL rating (ELO, W/L, K/D, OBJ untouched).",
+    guild=guild_object(),
+)
+@is_pug_staff()
+@app_commands.describe(user="Player whose average CKL rating to reset")
+async def pug_reset_rating(interaction: discord.Interaction, user: discord.Member):
+    reset_rating(user.id)
+    await interaction.response.send_message(
+        f"Reset {user.mention}'s average CKL rating. It will rebuild from their next game. "
+        f"ELO, W/L, K/D, and OBJ are unchanged.",
+        ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
 # Match control
 @bot.tree.command(name="match-fix", description="Manually set the winner of a live match.", guild=guild_object())
 @is_pug_staff()
@@ -624,7 +641,8 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
     embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
     embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
     embed.add_field(name="Avg. OBJ", value=str(avg_obj), inline=True)
-    avg_rating = round(p.get("rating_sum", 0.0) / games, 2) if games else 0.0
+    rgames = p.get("rating_games", 0)
+    avg_rating = round(p.get("rating_sum", 0.0) / rgames, 2) if rgames else 0.0
     embed.add_field(name="Avg. CKL Rating", value=f"{avg_rating} / 10", inline=True)
 
     kd_flags = p.get("low_kd_flags", 0)

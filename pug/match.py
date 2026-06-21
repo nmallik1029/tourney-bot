@@ -28,6 +28,7 @@ from pug.storage import (
     next_queue_number,
     record_match_stats,
     add_flag,
+    in_active_match,
 )
 
 
@@ -258,6 +259,11 @@ async def maybe_autopop(guild: discord.Guild, bot):
 async def pop_queue(guild: discord.Guild, bot, force: bool = False):
     """Start a check-in match. Normally requires a full MATCH_SIZE queue; a forced
     pop (admin dashboard) starts with whoever is queued (min 2, for testing)."""
+    # Safety net: never pull anyone already in a live match into a new one, even if
+    # they somehow slipped into the queue.
+    for uid in [u for u in pug_queue if in_active_match(u)]:
+        pug_queue.remove(uid)
+
     if force:
         size = len(pug_queue)
         if size < 2:
@@ -274,38 +280,22 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
     cfg = pug_data["config"]
     category = guild.get_channel(cfg.get("category_id"))
 
-    everyone = guild.default_role
-    # Text channel: private to the match players.
-    text_overwrites = {
-        everyone: discord.PermissionOverwrite(view_channel=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-    }
-    # Voice channel: publicly visible (so people see games are live) but nobody can join.
-    vc_overwrites = {
-        everyone: discord.PermissionOverwrite(view_channel=True, connect=False),
-        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True),
-    }
     names = {}
     for pid in players:
         member = guild.get_member(pid)
         names[pid] = primary_username(pid, member.display_name if member else str(pid))
-        if member:
-            text_overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-            vc_overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
 
-    _add_spectator_overwrites(text_overwrites, guild, is_vc=False)
-    _add_spectator_overwrites(vc_overwrites, guild, is_vc=True)
-
-    text_ch = await guild.create_text_channel(name, category=category, overwrites=text_overwrites)
-    checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=vc_overwrites)
-
+    # Register the match in memory IMMEDIATELY - synchronously, before any `await` -
+    # so the popped players are never in limbo (out of the queue but not yet in a
+    # match). Otherwise a spam-clicked Join during channel creation below would find
+    # them in neither and re-add them to the queue (TOCTOU race).
     match = {
         "key": name,
         "name": name,
         "number": number,
         "guild_id": guild.id,
-        "text_channel_id": text_ch.id,
-        "checkin_vc_id": checkin_vc.id,
+        "text_channel_id": None,
+        "checkin_vc_id": None,
         "team1_vc_id": None,
         "team2_vc_id": None,
         "players": players,
@@ -330,6 +320,31 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
         "host_message_id": None,
     }
     pug_matches[name] = match
+
+    everyone = guild.default_role
+    # Text channel: private to the match players.
+    text_overwrites = {
+        everyone: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    # Voice channel: publicly visible (so people see games are live) but nobody can join.
+    vc_overwrites = {
+        everyone: discord.PermissionOverwrite(view_channel=True, connect=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, connect=True),
+    }
+    for pid in players:
+        member = guild.get_member(pid)
+        if member:
+            text_overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            vc_overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True)
+
+    _add_spectator_overwrites(text_overwrites, guild, is_vc=False)
+    _add_spectator_overwrites(vc_overwrites, guild, is_vc=True)
+
+    text_ch = await guild.create_text_channel(name, category=category, overwrites=text_overwrites)
+    checkin_vc = await guild.create_voice_channel(name, category=category, overwrites=vc_overwrites)
+    match["text_channel_id"] = text_ch.id
+    match["checkin_vc_id"] = checkin_vc.id
 
     # Drag any queued player who's already in a voice channel into the match VC
     # (this also counts as their check-in). Players not in voice get pinged as usual.

@@ -141,8 +141,12 @@ def _winrate(p):
 
 
 def _avg_rating(p):
-    g = p.get("games", 0)
+    g = p.get("rating_games", 0)
     return (p.get("rating_sum", 0.0) / g) if g else 0.0
+
+
+def _played_rating(p):
+    return p.get("rating_games", 0) > 0
 
 
 def _avg_obj(p):
@@ -173,7 +177,7 @@ STATS = {
                lambda p: f"**{p.get('wins',0)+p.get('losses',0)}**", _played_ranked),
     "rating": ("CKL Rating",   _avg_rating,
                lambda p: f"**{round(_avg_rating(p),2)}** / 10",
-               lambda p: f"**{round(_avg_rating(p),2)}**", _played_stats),
+               lambda p: f"**{round(_avg_rating(p),2)}**", _played_rating),
     "kd":     ("K/D",          _kd,
                lambda p: f"**{_kd(p):.2f}** ({p.get('kills',0)}/{p.get('deaths',0)})",
                lambda p: f"**{_kd(p):.2f}**", _played_stats),
