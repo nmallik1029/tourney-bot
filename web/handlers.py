@@ -463,7 +463,7 @@ async def handle_api_tournament(request: web.Request) -> web.Response:
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
-    p_map = {p["id"]: p["name"] for p in participants}
+    p_map = {str(p["id"]): p["name"] for p in participants}
 
     started_ch_ids = {m.get("challonge_match_id") for m in active_matches.values() if m.get("challonge_match_id")}
 
@@ -474,8 +474,8 @@ async def handle_api_tournament(request: web.Request) -> web.Response:
             "round": m.get("round", 0),
             "identifier": m.get("identifier", ""),
             "state": m["state"],
-            "player1": p_map.get(m.get("player1_id"), None),
-            "player2": p_map.get(m.get("player2_id"), None),
+            "player1": p_map.get(str(m.get("player1_id")), None),
+            "player2": p_map.get(str(m.get("player2_id")), None),
             "player1_id": m.get("player1_id"),
             "player2_id": m.get("player2_id"),
             "scores_csv": m.get("scores_csv", ""),
@@ -516,6 +516,7 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
 
     try:
         matches = await challonge_get_matches(challonge_id, state="open", community_id=community_id)
+        participants = await challonge_get_participants(challonge_id, community_id=community_id)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -523,15 +524,32 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
     if not ch_match:
         return web.json_response({"error": "match not found or not open"}, status=404)
 
-    participant_map = t.get("challonge_participant_map", {})
+    participant_map = t.setdefault("challonge_participant_map", {})
     ch_to_local = {}
     for team_id, ch_pid in participant_map.items():
         team_dict = next((tm for tm in t["teams"] if tm["team_id"] == team_id), None)
         if team_dict:
-            ch_to_local[ch_pid] = team_dict
+            ch_to_local[str(ch_pid)] = team_dict
 
-    t1_dict = ch_to_local.get(ch_match.get("player1_id"))
-    t2_dict = ch_to_local.get(ch_match.get("player2_id"))
+    teams_by_id = {str(tm.get("team_id")): tm for tm in t.get("teams", [])}
+    teams_by_name = {str(tm.get("team_name", "")).strip().lower(): tm for tm in t.get("teams", [])}
+    map_changed = False
+    for p in participants:
+        pid = str(p.get("id"))
+        misc = str(p.get("misc") or "")
+        name_key = str(p.get("name", "")).strip().lower()
+        team_dict = teams_by_id.get(misc) or teams_by_name.get(name_key)
+        if team_dict:
+            ch_to_local[pid] = team_dict
+            if participant_map.get(team_dict["team_id"]) != pid:
+                participant_map[team_dict["team_id"]] = pid
+                map_changed = True
+
+    if map_changed:
+        save_tournaments()
+
+    t1_dict = ch_to_local.get(str(ch_match.get("player1_id")))
+    t2_dict = ch_to_local.get(str(ch_match.get("player2_id")))
     if not t1_dict or not t2_dict:
         return web.json_response({"error": "could not resolve teams"}, status=404)
 
