@@ -74,7 +74,7 @@ def _headers(token: str) -> dict:
     auth = API_KEY or f"Bearer {token}"
     return {
         "Authorization": auth,
-        "Authorization-Type": "v2",
+        "Authorization-Type": "v1" if API_KEY else "v2",
         "Content-Type": "application/vnd.api+json",
         "Accept": "application/json",
     }
