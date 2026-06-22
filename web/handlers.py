@@ -464,18 +464,24 @@ async def handle_api_tournament(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
     p_map = {str(p["id"]): p["name"] for p in participants}
+    two_team_fallback = len(t.get("teams", [])) == 2
 
     started_ch_ids = {m.get("challonge_match_id") for m in active_matches.values() if m.get("challonge_match_id")}
 
     match_list = []
     for m in matches:
+        player1 = p_map.get(str(m.get("player1_id")), None)
+        player2 = p_map.get(str(m.get("player2_id")), None)
+        if two_team_fallback and not player1 and not player2:
+            player1 = t["teams"][0].get("team_name")
+            player2 = t["teams"][1].get("team_name")
         match_list.append({
             "id": m["id"],
             "round": m.get("round", 0),
             "identifier": m.get("identifier", ""),
             "state": m["state"],
-            "player1": p_map.get(str(m.get("player1_id")), None),
-            "player2": p_map.get(str(m.get("player2_id")), None),
+            "player1": player1,
+            "player2": player2,
             "player1_id": m.get("player1_id"),
             "player2_id": m.get("player2_id"),
             "scores_csv": m.get("scores_csv", ""),
@@ -551,7 +557,18 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
     t1_dict = ch_to_local.get(str(ch_match.get("player1_id")))
     t2_dict = ch_to_local.get(str(ch_match.get("player2_id")))
     if not t1_dict or not t2_dict:
-        return web.json_response({"error": "could not resolve teams"}, status=404)
+        if len(t.get("teams", [])) == 2 and not ch_match.get("player1_id") and not ch_match.get("player2_id"):
+            t1_dict, t2_dict = t["teams"][0], t["teams"][1]
+        else:
+            return web.json_response({
+                "error": "could not resolve teams",
+                "details": {
+                    "player1_id": ch_match.get("player1_id"),
+                    "player2_id": ch_match.get("player2_id"),
+                    "known_participant_ids": sorted(ch_to_local.keys()),
+                    "team_count": len(t.get("teams", [])),
+                },
+            }, status=404)
 
     guild = bot.get_guild(t.get("guild_id", SERVER_ID))
     if not guild:
