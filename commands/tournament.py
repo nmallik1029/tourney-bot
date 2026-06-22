@@ -826,4 +826,9 @@ async def tournament_delete(interaction: discord.Interaction, tournament_id: str
 
     del tournaments[t_id]
     save_tournaments()
-    await interaction.followup.send(f"Tournament `{t_id}` has been deleted.")
+    try:
+        await interaction.followup.send(f"Tournament `{t_id}` has been deleted.")
+    except discord.NotFound:
+        print(f"[Tournament] Deleted {t_id}, but Discord followup webhook was gone.")
+    except discord.HTTPException as e:
+        print(f"[Tournament] Deleted {t_id}, but failed to send followup: {e}")

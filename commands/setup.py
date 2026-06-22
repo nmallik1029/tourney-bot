@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 
 from core.bot_instance import bot
-from core.guild_config import set_id, gconf, set_challonge_subdomain, challonge_subdomain
+from core.guild_config import gconf, save_guild_config, set_challonge_subdomain, challonge_subdomain
 
 
 def _admin_only():
@@ -41,16 +41,22 @@ async def config_roles(
 ):
     gid = interaction.guild.id
     changed = []
+    updates = []
     if staff_role is not None:
-        set_id("mod_role_id", staff_role.id, gid)
+        updates.append(("mod_role_id", staff_role.id))
         changed.append(f"Staff: {staff_role.mention}")
     if caster_role is not None:
-        set_id("caster_role_id", caster_role.id, gid)
+        updates.append(("caster_role_id", caster_role.id))
         changed.append(f"Caster: {caster_role.mention}")
     if not changed:
         await interaction.response.send_message("Nothing to change -- pass at least one role.", ephemeral=True)
         return
-    await interaction.response.send_message(
+    await interaction.response.defer(ephemeral=True)
+    c = gconf(gid)
+    for field, value in updates:
+        c[field] = int(value or 0)
+    save_guild_config()
+    await interaction.followup.send(
         "Updated:\n" + "\n".join(changed), ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
@@ -88,14 +94,20 @@ async def config_pug_roles(
         ("pug_spectator_role_id", spectator_role, "Spectator"),
     ]
     changed = []
+    updates = []
     for field, role, label in mapping:
         if role is not None:
-            set_id(field, role.id, gid)
+            updates.append((field, role.id))
             changed.append(f"{label}: {role.mention}")
     if not changed:
         await interaction.response.send_message("Nothing to change -- pass at least one role.", ephemeral=True)
         return
-    await interaction.response.send_message(
+    await interaction.response.defer(ephemeral=True)
+    c = gconf(gid)
+    for field, value in updates:
+        c[field] = int(value or 0)
+    save_guild_config()
+    await interaction.followup.send(
         "Updated PUG roles:\n" + "\n".join(changed), ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
@@ -120,9 +132,10 @@ async def config_challonge(interaction: discord.Interaction, subdomain: str = ""
         .removesuffix(".challonge.com")
         .strip("/")
     )
+    await interaction.response.defer(ephemeral=True)
     set_challonge_subdomain(sub, interaction.guild.id)
     if sub:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Brackets for this server will use Challonge Community **{sub}**.\n"
             f"-# The Community must already exist under the bot's Challonge account, or "
             f"bracket creation will fail. For free Communities, use the permalink from "
@@ -130,7 +143,7 @@ async def config_challonge(interaction: discord.Interaction, subdomain: str = ""
             ephemeral=True,
         )
     else:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Cleared. Brackets for this server will go to the account's main page.", ephemeral=True
         )
 

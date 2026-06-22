@@ -8,6 +8,9 @@ Setup (env vars), from the Connect app at https://connect.challonge.com:
   CHALLONGE_CLIENT_ID
   CHALLONGE_CLIENT_SECRET
 
+Alternative:
+  CHALLONGE_API_KEY
+
 The public functions keep the same names/return shapes the rest of the bot expects:
 each resource is flattened from JSON:API ({id, type, attributes}) back into a flat dict
 (attributes + a string `id`), so callers reading `m["player1_id"]`, `p["misc"]`,
@@ -24,10 +27,11 @@ import aiohttp
 
 CLIENT_ID = os.environ.get("CHALLONGE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("CHALLONGE_CLIENT_SECRET", "")
+API_KEY = os.environ.get("CHALLONGE_API_KEY", "")
 
 OAUTH_TOKEN_URL = "https://api.challonge.com/oauth/token"
 API_BASE = "https://api.challonge.com/v2.1"
-SCOPES = ("me tournaments:read tournaments:write participants:read "
+SCOPES = ("me communities:manage tournaments:read tournaments:write participants:read "
           "participants:write matches:read matches:write")
 
 # Cached bearer token (tokens last ~1 week; we refresh a minute early).
@@ -67,8 +71,9 @@ async def _get_token() -> str:
 
 
 def _headers(token: str) -> dict:
+    auth = API_KEY or f"Bearer {token}"
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": auth,
         "Authorization-Type": "v2",
         "Content-Type": "application/vnd.api+json",
         "Accept": "application/json",
@@ -76,7 +81,7 @@ def _headers(token: str) -> dict:
 
 
 async def _request(method: str, path: str, *, body: dict | None = None, params: dict | None = None):
-    token = await _get_token()
+    token = "" if API_KEY else await _get_token()
     url = f"{API_BASE}{path}"
     payload = json.dumps(body) if body is not None else None
     async with aiohttp.ClientSession() as session:

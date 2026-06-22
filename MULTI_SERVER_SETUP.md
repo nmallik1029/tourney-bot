@@ -140,3 +140,18 @@ Use one Gist for all servers. The bot stores multi-server data inside that Gist:
 - `config.json`
 
 Use `GUILD_IDS` to control which servers receive slash commands.
+
+For Challonge, you can use either:
+
+```text
+CHALLONGE_API_KEY
+```
+
+or:
+
+```text
+CHALLONGE_CLIENT_ID
+CHALLONGE_CLIENT_SECRET
+```
+
+`CHALLONGE_API_KEY` is usually simpler for Community brackets. If it is set, the bot uses it instead of OAuth.
