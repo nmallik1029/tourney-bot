@@ -700,8 +700,8 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
             print(f"[Teams] Error creating role/channels for {team_name}: {e}")
     save_tournaments()
 
-    # Create Challonge bracket. Filed under this server's Community subdomain (if set),
-    # so each server's brackets are grouped separately on Challonge.
+    # Create Challonge bracket. Filed under this server's Community permalink/id (if
+    # set), so each server's brackets are grouped separately on Challonge.
     from core.guild_config import challonge_subdomain
     team_count = len(seeded_teams)
     subdomain = challonge_subdomain(t.get("guild_id"))
@@ -715,7 +715,7 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
         challonge_id = ch_tourney["id"]
         t["challonge_id"] = challonge_id
         fallback_url = (
-            f"https://{subdomain}.challonge.com/{slug}" if subdomain
+            f"https://challonge.com/communities/{subdomain}" if subdomain
             else f"https://challonge.com/{slug}"
         )
         t["challonge_url"] = ch_tourney.get("full_challonge_url", fallback_url)

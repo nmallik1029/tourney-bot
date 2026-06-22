@@ -103,20 +103,30 @@ async def config_pug_roles(
 
 @bot.tree.command(
     name="config-challonge",
-    description="Set this server's Challonge Community subdomain for brackets (admin only).",
+    description="Set this server's Challonge Community permalink/ID for brackets (admin only).",
 )
 @_admin_only()
 @app_commands.describe(
-    subdomain="Your Challonge Community subdomain (the X in X.challonge.com). Blank to clear.",
+    subdomain="Community permalink/ID, e.g. the X in challonge.com/communities/X. Blank to clear.",
 )
 async def config_challonge(interaction: discord.Interaction, subdomain: str = ""):
-    sub = (subdomain or "").strip().lower().removesuffix(".challonge.com")
+    sub = (
+        (subdomain or "")
+        .strip()
+        .lower()
+        .removeprefix("https://")
+        .removeprefix("http://")
+        .removeprefix("challonge.com/communities/")
+        .removesuffix(".challonge.com")
+        .strip("/")
+    )
     set_challonge_subdomain(sub, interaction.guild.id)
     if sub:
         await interaction.response.send_message(
-            f"Brackets for this server will be filed under **{sub}.challonge.com**.\n"
+            f"Brackets for this server will use Challonge Community **{sub}**.\n"
             f"-# The Community must already exist under the bot's Challonge account, or "
-            f"bracket creation will fail. Create it at challonge.com if you haven't.",
+            f"bracket creation will fail. For free Communities, use the permalink from "
+            f"`challonge.com/communities/{sub}`.",
             ephemeral=True,
         )
     else:
@@ -165,7 +175,10 @@ async def config_show(interaction: discord.Interaction):
     sub = challonge_subdomain(interaction.guild.id)
     embed.add_field(
         name="Challonge",
-        value=(f"Community: **{sub}.challonge.com**" if sub else "Community: *main account*"),
+        value=(
+            f"Community: **{sub}** (`challonge.com/communities/{sub}`)"
+            if sub else "Community: *main account*"
+        ),
         inline=False,
     )
     await interaction.response.send_message(

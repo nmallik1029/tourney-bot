@@ -195,9 +195,10 @@ def admin_category_id(guild_id: int | None = None) -> int:
     return get_id("admin_category_id", guild_id)
 
 
-# Challonge Community subdomain (a string, e.g. "myleague" for myleague.challonge.com).
-# Empty -> tournaments are filed under the account's main page. The Community must be
-# created manually on challonge.com; the API can't create it.
+# Challonge Community permalink / id (e.g. "myleague" from
+# challonge.com/communities/myleague). Empty -> tournaments are filed under the
+# account's main page. The Community must be created manually on challonge.com; the
+# API can't create it.
 def challonge_subdomain(guild_id: int | None = None) -> str:
     return str(gconf(guild_id).get("challonge_subdomain", "") or "").strip()
 
