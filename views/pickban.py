@@ -668,6 +668,7 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
         "updates_channel_id": found_tournament.get("updates_channel_id"),
         "challonge_match_id": challonge_match_id,
         "challonge_id": found_tournament.get("challonge_id"),
+        "challonge_community_id": found_tournament.get("challonge_community_id", ""),
         "challonge_participant_map": found_tournament.get("challonge_participant_map", {}),
         "series_score": {},
         "casted": casted,

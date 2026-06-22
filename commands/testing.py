@@ -148,6 +148,7 @@ async def test_match_cmd(
         "updates_channel_id": channel.id,
         "challonge_match_id": None,
         "challonge_id": None,
+        "challonge_community_id": "",
         "challonge_participant_map": {},
         "series_score": {},
         "casted": is_casted,

@@ -126,7 +126,14 @@ async def challonge_create_tournament(name: str, url_slug: str, subdomain: str =
     return _flatten(data["data"])
 
 
-async def challonge_add_participants(challonge_id, teams_with_seeds: list[dict]) -> list:
+def _community_params(community_id: str = "", extra: dict | None = None) -> dict | None:
+    params = dict(extra or {})
+    if community_id:
+        params["community_id"] = community_id
+    return params or None
+
+
+async def challonge_add_participants(challonge_id, teams_with_seeds: list[dict], community_id: str = "") -> list:
     """teams_with_seeds: [{"name": "...", "seed": 1, "misc": "team_id"}, ...]. Added one at
     a time (v2 single-create) so the team_id<->participant_id mapping stays exact."""
     added = []
@@ -136,33 +143,48 @@ async def challonge_add_participants(challonge_id, teams_with_seeds: list[dict])
             "seed": int(t["seed"]),
             "misc": t.get("misc", ""),
         }}}
-        data = await _request("POST", f"/tournaments/{challonge_id}/participants.json", body=body)
+        data = await _request(
+            "POST",
+            f"/tournaments/{challonge_id}/participants.json",
+            body=body,
+            params=_community_params(community_id),
+        )
         added.append(_flatten(data["data"]))
     return added
 
 
-async def challonge_start(challonge_id) -> dict:
+async def challonge_start(challonge_id, community_id: str = "") -> dict:
     body = {"data": {"type": "TournamentState", "attributes": {"state": "start"}}}
-    data = await _request("PUT", f"/tournaments/{challonge_id}/change_state.json", body=body)
+    data = await _request(
+        "PUT",
+        f"/tournaments/{challonge_id}/change_state.json",
+        body=body,
+        params=_community_params(community_id),
+    )
     return data.get("data", data)
 
 
-async def challonge_get_matches(challonge_id, state="open") -> list:
+async def challonge_get_matches(challonge_id, state="open", community_id: str = "") -> list:
     # v1 used state="all" to mean everything; v2 returns all when the param is omitted.
     params = None if state in (None, "all") else {"state": state}
+    params = _community_params(community_id, params)
     data = await _request("GET", f"/tournaments/{challonge_id}/matches.json", params=params)
     items = data.get("data", [])
     return [_flatten(m) for m in items] if isinstance(items, list) else []
 
 
-async def challonge_get_participants(challonge_id) -> list:
-    data = await _request("GET", f"/tournaments/{challonge_id}/participants.json")
+async def challonge_get_participants(challonge_id, community_id: str = "") -> list:
+    data = await _request(
+        "GET",
+        f"/tournaments/{challonge_id}/participants.json",
+        params=_community_params(community_id),
+    )
     items = data.get("data", [])
     return [_flatten(p) for p in items] if isinstance(items, list) else []
 
 
 async def challonge_update_match(challonge_id, match_id, player1_id, player2_id,
-                                 scores_csv: str, winner_id) -> dict:
+                                 scores_csv: str, winner_id, community_id: str = "") -> dict:
     """Report a single-set result. `scores_csv` is "p1score-p2score" (already oriented to
     player1 then player2); `winner_id` is the advancing participant."""
     parts = str(scores_csv).split("-")
@@ -173,5 +195,10 @@ async def challonge_update_match(challonge_id, match_id, player1_id, player2_id,
         {"participant_id": str(player2_id), "score_set": s2, "advancing": str(player2_id) == str(winner_id)},
     ]
     body = {"data": {"type": "Match", "attributes": {"match": match_arr}}}
-    data = await _request("PUT", f"/tournaments/{challonge_id}/matches/{match_id}.json", body=body)
+    data = await _request(
+        "PUT",
+        f"/tournaments/{challonge_id}/matches/{match_id}.json",
+        body=body,
+        params=_community_params(community_id),
+    )
     return data.get("data", data)

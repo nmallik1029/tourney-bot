@@ -358,12 +358,13 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
             # Report to Challonge
             challonge_id = active_match.get("challonge_id")
             ch_match_id = active_match.get("challonge_match_id")
+            community_id = active_match.get("challonge_community_id", "")
             participant_map = active_match.get("challonge_participant_map", {})
             winner_ch_pid = participant_map.get(winner_discord.get("team_id"))
 
             if challonge_id and ch_match_id and winner_ch_pid:
                 try:
-                    open_matches = await challonge_get_matches(challonge_id, state="all")
+                    open_matches = await challonge_get_matches(challonge_id, state="all", community_id=community_id)
                     ch_match = next((m for m in open_matches if m["id"] == ch_match_id), None)
                     if ch_match:
                         if ch_match["player1_id"] == winner_ch_pid:
@@ -374,6 +375,7 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                             challonge_id, ch_match_id,
                             ch_match["player1_id"], ch_match["player2_id"],
                             csv, winner_ch_pid,
+                            community_id=community_id,
                         )
                         print(f"[Challonge] Series decided -- reported {csv} for match {ch_match_id}")
                 except Exception as e:
@@ -453,10 +455,11 @@ async def handle_api_tournament(request: web.Request) -> web.Response:
     challonge_id = t.get("challonge_id")
     if not challonge_id:
         return web.json_response({"error": "no bracket"}, status=404)
+    community_id = t.get("challonge_community_id", "")
 
     try:
-        matches = await challonge_get_matches(challonge_id, state="all")
-        participants = await challonge_get_participants(challonge_id)
+        matches = await challonge_get_matches(challonge_id, state="all", community_id=community_id)
+        participants = await challonge_get_participants(challonge_id, community_id=community_id)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -509,9 +512,10 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
     challonge_id = t.get("challonge_id")
     if not challonge_id:
         return web.json_response({"error": "no bracket"}, status=404)
+    community_id = t.get("challonge_community_id", "")
 
     try:
-        matches = await challonge_get_matches(challonge_id, state="open")
+        matches = await challonge_get_matches(challonge_id, state="open", community_id=community_id)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -714,6 +718,7 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
         ch_tourney = await challonge_create_tournament(ch_name, slug, subdomain=subdomain)
         challonge_id = ch_tourney["id"]
         t["challonge_id"] = challonge_id
+        t["challonge_community_id"] = subdomain
         fallback_url = (
             f"https://challonge.com/communities/{subdomain}" if subdomain
             else f"https://challonge.com/{slug}"
@@ -726,7 +731,7 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
             for i, tm in enumerate(seeded_teams)
         ]
         print(f"[Challonge] Adding {len(participants)} participants...")
-        added = await challonge_add_participants(challonge_id, participants)
+        added = await challonge_add_participants(challonge_id, participants, community_id=subdomain)
         print(f"[Challonge] Participants added: {len(added)}")
 
         participant_map = {}
@@ -737,7 +742,7 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
                     participant_map[p["misc"]] = p["id"]
         t["challonge_participant_map"] = participant_map
 
-        await challonge_start(challonge_id)
+        await challonge_start(challonge_id, community_id=subdomain)
         save_tournaments()
         print(f"[Challonge] Tournament started successfully")
 

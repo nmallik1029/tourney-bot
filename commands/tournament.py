@@ -476,12 +476,13 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     # Determine top 2 teams from Challonge standings
     vod_team_ids = set()  # team_ids that need VOD submissions (keep their channels)
     challonge_id = t.get("challonge_id")
+    community_id = t.get("challonge_community_id", "")
     participant_map = t.get("challonge_participant_map", {})
     top_2_teams = []  # list of (team_dict, placement_str)
 
     if challonge_id:
         try:
-            participants = await challonge_get_participants(challonge_id)
+            participants = await challonge_get_participants(challonge_id, community_id=community_id)
             print(f"[VOD] Fetched {len(participants)} participants from Challonge")
 
             # Sort participants by final_rank (1st, 2nd)
@@ -512,7 +513,7 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
                 # No final_rank -- tournament may not be finalized on Challonge
                 # Fallback: get all completed matches, find the grand finals participants
                 from services.challonge import challonge_get_matches
-                all_matches = await challonge_get_matches(challonge_id, state="all")
+                all_matches = await challonge_get_matches(challonge_id, state="all", community_id=community_id)
                 print(f"[VOD] Fallback: checking {len(all_matches)} matches for finalists")
 
                 # Find the match with the highest round number (grand finals)
