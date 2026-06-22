@@ -104,15 +104,32 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
     team1_name = teams[0]["name"]
     team2_name = teams[1]["name"]
 
-    matched_tournament = None
-    matched_tournament_id = None
-    matched_team1 = None
-    matched_team2 = None
+    active_candidates = [
+        m for m in active_matches.values()
+        if m.get("challonge_match_id")
+        and {m["teams"][0]["name"].lower(), m["teams"][1]["name"].lower()}
+        == {team1_name.strip().lower(), team2_name.strip().lower()}
+    ]
+    if len(active_candidates) > 1:
+        ids = [m.get("match_id") for m in active_candidates]
+        print(f"[Webhook] Ambiguous active match for teams {team1_name} vs {team2_name}: {ids}")
+        return web.Response(status=200, text="ambiguous")
+    active_match = active_candidates[0] if active_candidates else None
 
-    for t_id, t in tournaments.items():
+    tournament_candidates = []
+    search_items = (
+        [(active_match.get("tournament_id"), tournaments.get(active_match.get("tournament_id")))]
+        if active_match else tournaments.items()
+    )
+
+    for t_id, t in search_items:
+        if not t:
+            continue
         if t.get("open"):
             continue
         if not t.get("updates_channel_id"):
+            continue
+        if active_match and active_match.get("guild_id") and t.get("guild_id") != active_match.get("guild_id"):
             continue
 
         registered_teams = t.get("teams", [])
@@ -120,15 +137,17 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         t2 = next((tm for tm in registered_teams if tm["team_name"].strip().lower() == team2_name.strip().lower()), None)
 
         if t1 and t2:
-            matched_tournament = t
-            matched_tournament_id = t_id
-            matched_team1 = t1
-            matched_team2 = t2
-            break
+            tournament_candidates.append((t_id, t, t1, t2))
 
-    if not matched_tournament:
+    if not tournament_candidates:
         print(f"[Webhook] No tournament match found for teams: {team1_name} vs {team2_name}")
         return web.Response(status=200, text="ok")
+    if len(tournament_candidates) > 1:
+        ids = [tid for tid, _t, _t1, _t2 in tournament_candidates]
+        print(f"[Webhook] Ambiguous tournament match for teams {team1_name} vs {team2_name}: {ids}")
+        return web.Response(status=200, text="ambiguous")
+
+    matched_tournament_id, matched_tournament, matched_team1, matched_team2 = tournament_candidates[0]
 
     winner_krunker = next((tm for tm in teams if tm["team"] == winner_team_num), None)
     loser_krunker = next((tm for tm in teams if tm["team"] != winner_team_num), None)
@@ -176,14 +195,17 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         import traceback
         traceback.print_exc()
 
-    # Track series score and report to Challonge when series is decided
-    active_match = next(
-        (m for m in active_matches.values()
-         if m.get("challonge_match_id")
-         and {m["teams"][0]["name"].lower(), m["teams"][1]["name"].lower()}
-         == {winner_discord["team_name"].lower(), loser_discord["team_name"].lower()}),
-        None,
-    )
+    # Track series score and report to Challonge when series is decided.
+    if not active_match:
+        active_match = next(
+            (
+                m for m in active_matches.values()
+                if m.get("tournament_id") == matched_tournament_id
+                and {m["teams"][0]["name"].lower(), m["teams"][1]["name"].lower()}
+                == {winner_discord["team_name"].lower(), loser_discord["team_name"].lower()}
+            ),
+            None,
+        )
 
     if active_match:
         if "scoreboard_images" not in active_match:
@@ -348,7 +370,11 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                             csv = f"{winner_series_wins}-{loser_series_wins}"
                         else:
                             csv = f"{loser_series_wins}-{winner_series_wins}"
-                        await challonge_update_match(challonge_id, ch_match_id, csv, winner_ch_pid)
+                        await challonge_update_match(
+                            challonge_id, ch_match_id,
+                            ch_match["player1_id"], ch_match["player2_id"],
+                            csv, winner_ch_pid,
+                        )
                         print(f"[Challonge] Series decided -- reported {csv} for match {ch_match_id}")
                 except Exception as e:
                     print(f"[Challonge] Failed to report result: {e}")
@@ -505,7 +531,7 @@ async def handle_api_start_match(request: web.Request) -> web.Response:
     if not t1_dict or not t2_dict:
         return web.json_response({"error": "could not resolve teams"}, status=404)
 
-    guild = bot.get_guild(SERVER_ID)
+    guild = bot.get_guild(t.get("guild_id", SERVER_ID))
     if not guild:
         return web.json_response({"error": "bot not in target guild"}, status=500)
 
@@ -578,11 +604,12 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
     t["teams"] = seeded_teams
     save_tournaments()
 
-    guild = bot.get_guild(SERVER_ID)
+    guild = bot.get_guild(t.get("guild_id", SERVER_ID))
     if not guild:
         return web.json_response({"error": "bot not in guild"}, status=500)
 
-    staff_role = guild.get_role(ROLE_ID)
+    from core.guild_config import mod_role_id
+    staff_role = guild.get_role(mod_role_id(guild.id))
     t_cat, a_cat = get_categories(guild)
 
     read_only = {
@@ -673,16 +700,25 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
             print(f"[Teams] Error creating role/channels for {team_name}: {e}")
     save_tournaments()
 
-    # Create Challonge bracket
+    # Create Challonge bracket. Filed under this server's Community subdomain (if set),
+    # so each server's brackets are grouped separately on Challonge.
+    from core.guild_config import challonge_subdomain
     team_count = len(seeded_teams)
-    ch_name = f"krunkerbiweekly-{t['name']}"
-    slug = re.sub(r"[^a-z0-9]", "_", ch_name.lower()).strip("_")[:60]
+    subdomain = challonge_subdomain(t.get("guild_id"))
+    ch_name = t["name"]
+    # Append the globally-unique tournament id so names can't collide on a slug.
+    base_slug = re.sub(r"[^a-z0-9]", "_", ch_name.lower()).strip("_")[:50] or "tournament"
+    slug = f"{base_slug}_{str(t['id']).lower()}"
     try:
-        print(f"[Challonge] Creating tournament: {ch_name} ({slug})")
-        ch_tourney = await challonge_create_tournament(ch_name, slug)
+        print(f"[Challonge] Creating tournament: {ch_name} ({slug}) subdomain={subdomain or '(main)'}")
+        ch_tourney = await challonge_create_tournament(ch_name, slug, subdomain=subdomain)
         challonge_id = ch_tourney["id"]
         t["challonge_id"] = challonge_id
-        t["challonge_url"] = ch_tourney.get("full_challonge_url", f"https://krunker-biweeklies.challonge.com/{slug}")
+        fallback_url = (
+            f"https://{subdomain}.challonge.com/{slug}" if subdomain
+            else f"https://challonge.com/{slug}"
+        )
+        t["challonge_url"] = ch_tourney.get("full_challonge_url", fallback_url)
         print(f"[Challonge] Tournament created: {challonge_id}")
 
         participants = [
@@ -724,20 +760,28 @@ async def handle_api_confirm_seeding(request: web.Request) -> web.Response:
 
 
 # Dashboard
-def _valid_dashboard_token(token: str) -> bool:
+def _dashboard_scope(token: str):
+    """Resolve a dashboard token to the data it may see:
+      - "ALL"  -> the operator's DASHBOARD_TOKEN env override (every server)
+      - <int>  -> a guild id; the token only sees that server's tournaments
+      - None   -> invalid token
+    A tournament's own admin_token scopes to that tournament's guild."""
     if not token:
-        return False
-    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
-    if dashboard_token and token == dashboard_token:
-        return True
+        return None
+    master = os.environ.get("DASHBOARD_TOKEN", "")
+    if master and token == master:
+        return "ALL"
     if token in _dashboard_tokens:
-        return True
-    return any(t.get("admin_token") == token for t in tournaments.values())
+        return _dashboard_tokens[token]
+    for t in tournaments.values():
+        if t.get("admin_token") == token:
+            return t.get("guild_id")
+    return None
 
 
 async def handle_dashboard(request: web.Request) -> web.Response:
     token = request.query.get("token", "")
-    if not _valid_dashboard_token(token):
+    if _dashboard_scope(token) is None:
         return web.Response(status=403, text="Invalid token.")
     html = _load_template("dashboard.html").replace("{{TOKEN}}", token)
     return web.Response(content_type="text/html", text=html)
@@ -745,11 +789,16 @@ async def handle_dashboard(request: web.Request) -> web.Response:
 
 async def handle_api_dashboard(request: web.Request) -> web.Response:
     token = request.query.get("token", "")
-    if not _valid_dashboard_token(token):
+    scope = _dashboard_scope(token)
+    if scope is None:
         return web.json_response({"error": "forbidden"}, status=403)
 
+    # Only this token's server is listed (operator master token sees all).
+    visible = tournaments.items() if scope == "ALL" else [
+        (tid, t) for tid, t in tournaments.items() if t.get("guild_id") == scope
+    ]
     result = []
-    for t_id, t in tournaments.items():
+    for t_id, t in visible:
         teams_data = []
         for tm in t.get("teams", []):
             igns = [p.get("ign", "Unknown") for p in tm.get("players", [])]

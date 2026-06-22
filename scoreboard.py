@@ -41,23 +41,35 @@ def _rating_curve(x: float) -> float:
 def ckl_rating(kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2) -> float:
     """CKL performance rating on a 0-10 scale.
 
-    Counting stats are normalized PER ROUND (rounds = sum of both teams' map scores, e.g.
-    2-0 -> 2, 2-1 -> 3) so a longer BO3 isn't rewarded just for accumulating more. Each
-    sub-score is clamped to [0,10]; the weighted average is mapped through a curve that
-    makes 7-9 attainable while keeping 9.7-10 elite.
+    Calibrated for full-map CKL output instead of per-round averages: monster games
+    should be able to reach 9.5+, while the final score is still clamped to 0-10.
+    `rounds` is kept for existing callers but is no longer used by this formula.
 
       ~9-10 godlike | ~8 elite | ~7 great | ~5 average | ~3-4 bad | ~1 awful
     """
-    r = max(1, rounds)
-    kpr, dpr, opr, dmgpr = kills / r, deaths / r, obj / r, dmg / r
+    kills = max(0, int(kills or 0))
+    deaths = max(0, int(deaths or 0))
+    obj = max(0, int(obj or 0))
+    dmg = max(0, int(dmg or 0))
+
+    if kills == 0 and deaths == 0 and obj == 0 and dmg == 0:
+        return 0.0
+
     kd = kills / deaths if deaths else float(kills)
-    kd_s   = _clamp(5 + (kd - 1) * 4)   # K/D is a ratio, already round-independent
-    kill_s = _clamp(kpr / 2.3)
-    surv_s = _clamp((19 - dpr) * 0.85)
-    obj_s  = _clamp(opr / 58)
-    dmg_s  = _clamp(dmgpr / 270)
-    avg = kd_s * 0.15 + kill_s * 0.25 + surv_s * 0.10 + obj_s * 0.15 + dmg_s * 0.35
-    return round(_rating_curve(avg), 1)
+    kd_s = 5 + (kd - 1) * 5
+    kill_s = kills / 5
+    surv_s = max(0, (60 - deaths) * 0.25)
+    obj_s = obj / 130
+    dmg_s = dmg / 700
+
+    avg = (
+        kd_s * 0.15 +
+        kill_s * 0.25 +
+        surv_s * 0.10 +
+        obj_s * 0.20 +
+        dmg_s * 0.30
+    )
+    return round(_clamp(avg), 1)
 
 
 def _lerp(a, b, f):

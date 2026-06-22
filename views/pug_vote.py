@@ -1,6 +1,7 @@
 import discord
 
 from core.config import MAPS
+from core.guild_views import GuildView
 from pug.storage import pug_matches
 from views.pug_sub import RequestSubButton
 
@@ -32,7 +33,7 @@ def build_vote_embed(match: dict, final: bool = False) -> discord.Embed:
     return embed
 
 
-class MapVoteView(discord.ui.View):
+class MapVoteView(GuildView):
     def __init__(self, match_key: str):
         super().__init__(timeout=None)
         self.match_key = match_key

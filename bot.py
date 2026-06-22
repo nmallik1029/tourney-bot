@@ -9,6 +9,7 @@ import commands.tournament  # noqa: F401
 import commands.match       # noqa: F401
 import commands.testing     # noqa: F401
 import commands.pug         # noqa: F401
+import commands.setup       # noqa: F401
 import events.lifecycle     # noqa: F401
 import events.messages      # noqa: F401
 import events.pug_listeners # noqa: F401

@@ -4,6 +4,34 @@ from core.storage import tournaments, save_tournaments, pending_registrations
 from utils.helpers import build_team_embed
 
 
+def _resolve_signup_tournament(interaction: discord.Interaction, fallback_id: str = ""):
+    """Resolve a signup click from the channel it happened in.
+
+    Persistent views route by custom_id, so the View instance's tournament_id is only a
+    fallback. The signup channel/topic is the reliable server-local source of truth.
+    """
+    guild_id = interaction.guild.id if interaction.guild else None
+    channel_id = interaction.channel.id if interaction.channel else None
+
+    if channel_id:
+        for tid, t in tournaments.items():
+            if t.get("guild_id") == guild_id and t.get("signups_channel_id") == channel_id:
+                return tid, t
+
+    topic = getattr(interaction.channel, "topic", "") or ""
+    for tid, t in tournaments.items():
+        if t.get("guild_id") == guild_id and tid in topic:
+            return tid, t
+
+    t = tournaments.get((fallback_id or "").upper())
+    if t and t.get("guild_id") == guild_id and (
+        not channel_id or t.get("signups_channel_id") == channel_id
+    ):
+        return t["id"], t
+
+    return None, None
+
+
 class SignupView(discord.ui.View):
     def __init__(self, tournament_id: str):
         super().__init__(timeout=None)
@@ -11,18 +39,11 @@ class SignupView(discord.ui.View):
 
     @discord.ui.button(label="Register Your Team", style=discord.ButtonStyle.success, custom_id="register_team_btn")
     async def register_team(self, interaction: discord.Interaction, button: discord.ui.Button):
-        t_id = self.tournament_id
-        if t_id not in tournaments:
-            topic = interaction.channel.topic or ""
-            for tid, t in tournaments.items():
-                if tid in topic:
-                    t_id = tid
-                    break
-            else:
-                await interaction.response.send_message("Tournament not found. It may have already closed.", ephemeral=True)
-                return
+        t_id, t = _resolve_signup_tournament(interaction, self.tournament_id)
+        if not t:
+            await interaction.response.send_message("Tournament not found. It may have already closed.", ephemeral=True)
+            return
 
-        t = tournaments[t_id]
         if not t["open"]:
             await interaction.response.send_message("Sign-ups for this tournament are closed.", ephemeral=True)
             return
@@ -232,7 +253,7 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
 
     async def on_submit(self, interaction: discord.Interaction):
         t = tournaments.get(self.tournament_id)
-        if not t:
+        if not t or t.get("guild_id") != interaction.guild.id:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
 
@@ -317,7 +338,7 @@ class IGNModal(discord.ui.Modal, title="Enter Team Name & IGNs"):
             save_tournaments()
 
 
-def _find_team_by_message(message_id: int):
+def _find_team_by_message(message_id: int, guild_id: int | None = None):
     """Look up (tournament_id, tournament, team) by the signup embed message ID.
 
     Persistent views in discord.py route by custom_id only, so self.team_id on
@@ -327,6 +348,8 @@ def _find_team_by_message(message_id: int):
     if not message_id:
         return None, None, None
     for tid, t in tournaments.items():
+        if guild_id is not None and t.get("guild_id") != guild_id:
+            continue
         for team in t.get("teams", []):
             if team.get("signup_message_id") == message_id:
                 return tid, t, team
@@ -344,7 +367,7 @@ class EditRosterView(discord.ui.View):
     async def _resolve(self, interaction: discord.Interaction):
         """Resolve the real tournament + team from the message the button is on."""
         message_id = interaction.message.id if interaction.message else None
-        tid, t, team = _find_team_by_message(message_id)
+        tid, t, team = _find_team_by_message(message_id, interaction.guild.id if interaction.guild else None)
         if not t or not team:
             await interaction.response.send_message(
                 "This team's signup record couldn't be located. It may have been removed.",
@@ -442,7 +465,7 @@ class ManageCoachSubsView(discord.ui.View):
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
     async def save(self, interaction: discord.Interaction, button: discord.ui.Button):
         t = tournaments.get(self.tournament_id)
-        if not t:
+        if not t or t.get("guild_id") != interaction.guild.id:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
         team = next((tm for tm in t["teams"] if tm["team_id"] == self.team_id), None)
@@ -570,7 +593,7 @@ class ManageCoachSubsIGNModal(discord.ui.Modal, title="Coach/Subs IGNs"):
 
     async def on_submit(self, interaction: discord.Interaction):
         t = tournaments.get(self.tournament_id)
-        if not t:
+        if not t or t.get("guild_id") != interaction.guild.id:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
         team = next((tm for tm in t["teams"] if tm["team_id"] == self.team_id), None)
@@ -715,7 +738,7 @@ class EditIGNModal(discord.ui.Modal, title="Update Team Name & IGNs"):
 
     async def on_submit(self, interaction: discord.Interaction):
         t = tournaments.get(self.tournament_id)
-        if not t:
+        if not t or t.get("guild_id") != interaction.guild.id:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
 

@@ -1,6 +1,6 @@
 import discord
 
-from pug.config import PUG_NA_ROLE_ID, PUG_EU_ROLE_ID
+from core.guild_config import pug_na_role_id, pug_eu_role_id
 
 
 async def apply_region_role(guild: discord.Guild, member: discord.Member, region: str):
@@ -9,8 +9,10 @@ async def apply_region_role(guild: discord.Guild, member: discord.Member, region
     if not guild or not member:
         return
     region = (region or "").upper()
-    na = guild.get_role(PUG_NA_ROLE_ID) if PUG_NA_ROLE_ID else None
-    eu = guild.get_role(PUG_EU_ROLE_ID) if PUG_EU_ROLE_ID else None
+    na_id = pug_na_role_id(guild.id)
+    eu_id = pug_eu_role_id(guild.id)
+    na = guild.get_role(na_id) if na_id else None
+    eu = guild.get_role(eu_id) if eu_id else None
 
     want = na if region == "NA" else (eu if region == "EU" else None)
     to_remove = [r for r in (na, eu) if r and r in member.roles and r != want]

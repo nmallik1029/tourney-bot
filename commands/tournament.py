@@ -52,10 +52,10 @@ class SetupView(discord.ui.View):
             await interaction.response.send_message("Please select both categories before saving.", ephemeral=True)
             return
 
-        save_config({
-            "tournament_category_id": self.tournament_category_id,
-            "admin_category_id": self.admin_category_id,
-        })
+        from core.guild_config import set_id
+        gid = interaction.guild.id
+        set_id("tournament_category_id", self.tournament_category_id, gid)
+        set_id("admin_category_id", self.admin_category_id, gid)
 
         t_cat = interaction.guild.get_channel(self.tournament_category_id)
         a_cat = interaction.guild.get_channel(self.admin_category_id)
@@ -71,7 +71,6 @@ class SetupView(discord.ui.View):
 @bot.tree.command(
     name="tournament-setup",
     description="Configure which categories tournament channels are placed in.",
-    guild=guild_object(),
 )
 @is_authorized()
 async def tournament_setup(interaction: discord.Interaction):
@@ -160,6 +159,7 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
 
         tournaments[tournament_id] = {
             "id": tournament_id,
+            "guild_id": interaction.guild.id,   # which server owns this tournament
             "name": self.tournament_name.value,
             "format": fmt,
             "team_size": team_size,
@@ -185,19 +185,19 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
         )
 
 
-@bot.tree.command(name="tournament-create", description="Create a new tournament and open sign-ups.", guild=guild_object())
+@bot.tree.command(name="tournament-create", description="Create a new tournament and open sign-ups.")
 @is_authorized()
 async def tournament_create(interaction: discord.Interaction):
     await interaction.response.send_modal(TournamentCreateModal())
 
 
 # /tournament-start
-@bot.tree.command(name="tournament-start", description="Close sign-ups and start the tournament.", guild=guild_object())
+@bot.tree.command(name="tournament-start", description="Close sign-ups and start the tournament.")
 @is_authorized()
 @app_commands.describe(tournament_id="The tournament ID from /tournament-create")
 async def tournament_start(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
@@ -222,20 +222,21 @@ async def tournament_start(interaction: discord.Interaction, tournament_id: str)
 
 
 # /tournament-info
-@bot.tree.command(name="tournament-info", description="Open the tournament dashboard.", guild=guild_object())
+@bot.tree.command(name="tournament-info", description="Open the tournament dashboard.")
 @is_authorized()
 async def tournament_info(interaction: discord.Interaction):
-    dashboard_token = os.environ.get("DASHBOARD_TOKEN", "")
-    if not dashboard_token:
-        dashboard_token = str(uuid.uuid4())
-        _dashboard_tokens.add(dashboard_token)
+    # Always mint a token scoped to THIS server, so the dashboard only shows this
+    # server's tournaments. (The DASHBOARD_TOKEN env stays an operator-only see-all
+    # override, recognized by the web layer but never handed out here.)
+    dashboard_token = str(uuid.uuid4())
+    _dashboard_tokens[dashboard_token] = interaction.guild.id
 
     url = f"{RAILWAY_BASE}/dashboard?token={dashboard_token}"
     await interaction.response.send_message(f"**Tournament Dashboard:**\n{url}", ephemeral=True)
 
 
 # /tournament-edit
-@bot.tree.command(name="tournament-edit", description="Edit tournament name, prize pool, or date.", guild=guild_object())
+@bot.tree.command(name="tournament-edit", description="Edit tournament name, prize pool, or date.")
 @is_authorized()
 @app_commands.describe(
     tournament_id="The tournament ID",
@@ -251,7 +252,7 @@ async def tournament_edit(
     date: str | None = None,
 ):
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
@@ -323,7 +324,6 @@ async def tournament_edit(
 @bot.tree.command(
     name="tournament-set-captain",
     description="Force-change a team's captain to another existing player on the roster.",
-    guild=guild_object(),
 )
 @is_authorized()
 @app_commands.describe(
@@ -341,7 +341,7 @@ async def tournament_set_captain(
     from views.registration import EditRosterView
 
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
@@ -415,12 +415,12 @@ async def tournament_set_captain(
 
 
 # /tournament-remove-team
-@bot.tree.command(name="tournament-remove-team", description="Remove a team from a tournament.", guild=guild_object())
+@bot.tree.command(name="tournament-remove-team", description="Remove a team from a tournament.")
 @is_authorized()
 @app_commands.describe(tournament_id="The tournament ID", team_name="The team name to remove")
 async def tournament_remove_team(interaction: discord.Interaction, tournament_id: str, team_name: str):
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
@@ -456,12 +456,12 @@ async def tournament_remove_team(interaction: discord.Interaction, tournament_id
 
 
 # /tournament-end
-@bot.tree.command(name="tournament-end", description="End a tournament -- clean up channels/roles but keep results.", guild=guild_object())
+@bot.tree.command(name="tournament-end", description="End a tournament -- clean up channels/roles but keep results.")
 @is_authorized()
 @app_commands.describe(tournament_id="The tournament ID to end")
 async def tournament_end(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
@@ -660,7 +660,8 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
                     archive_cat = await guild.create_category("Tournament Archive")
 
                 # Build read-only overwrites: hidden from everyone, staff can view, nobody sends.
-                staff_role = guild.get_role(ROLE_ID)
+                from core.guild_config import mod_role_id
+                staff_role = guild.get_role(mod_role_id(guild.id))
                 archive_overwrites = {
                     guild.default_role: discord.PermissionOverwrite(view_channel=False),
                     guild.me: discord.PermissionOverwrite(
@@ -757,12 +758,12 @@ async def tournament_end(interaction: discord.Interaction, tournament_id: str):
 
 
 # /tournament-delete
-@bot.tree.command(name="tournament-delete", description="Delete a tournament and its channels.", guild=guild_object())
+@bot.tree.command(name="tournament-delete", description="Delete a tournament and its channels.")
 @is_authorized()
 @app_commands.describe(tournament_id="The tournament ID to delete")
 async def tournament_delete(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 

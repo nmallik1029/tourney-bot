@@ -1,10 +1,11 @@
 import discord
 
+from core.guild_views import GuildView
 from pug.storage import pug_matches
 from pug.config import member_is_pug_staff
 
 
-class CancelRequestView(discord.ui.View):
+class CancelRequestView(GuildView):
     def __init__(self, match_key: str):
         super().__init__(timeout=None)
         self.match_key = match_key

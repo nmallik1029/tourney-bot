@@ -1,5 +1,6 @@
 import discord
 
+from core.guild_views import GuildView
 from pug.config import member_is_pug_staff
 from pug.storage import pug_matches, get_player, is_noadded
 
@@ -41,7 +42,7 @@ class RequestSubButton(discord.ui.Button):
         )
 
 
-class SubSetupView(discord.ui.View):
+class SubSetupView(GuildView):
     def __init__(self, match_key: str, guild: discord.Guild, requester_id: int, is_staff: bool = False):
         super().__init__(timeout=120)
         self.match_key = match_key
@@ -200,7 +201,7 @@ def _sub_embed(match: dict) -> discord.Embed:
     return embed
 
 
-class SubApprovalView(discord.ui.View):
+class SubApprovalView(GuildView):
     def __init__(self, match_key: str):
         super().__init__(timeout=None)
         self.match_key = match_key

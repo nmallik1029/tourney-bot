@@ -1,5 +1,6 @@
 import discord
 
+from core.guild_views import GuildView
 from pug.config import member_is_pug_staff
 from pug.storage import pug_matches
 from views.pug_sub import RequestSubButton
@@ -51,7 +52,7 @@ async def send_host_launch(interaction: discord.Interaction, match: dict, *, all
 
 
 # ── Host (Step: Click to Host) ──────────────────────────────────────────────────
-class PugHostView(discord.ui.View):
+class PugHostView(GuildView):
     def __init__(self, match_key: str):
         super().__init__(timeout=None)
         self.match_key = match_key
@@ -73,7 +74,7 @@ class PugHostButton(discord.ui.Button):
 
 
 # ── Join-the-game view (posted with the link) — has Rehost + Request a Sub ───────
-class JoinGameView(discord.ui.View):
+class JoinGameView(GuildView):
     def __init__(self, match_key: str):
         super().__init__(timeout=None)
         self.match_key = match_key

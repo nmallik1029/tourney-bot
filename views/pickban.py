@@ -360,7 +360,8 @@ class RehostRequestButton(discord.ui.Button):
         other_captain_name = match["teams"][other_team_idx]["name"]
         requesting_name = interaction.user.display_name
 
-        staff_role = interaction.guild.get_role(ROLE_ID)
+        from core.guild_config import mod_role_id
+        staff_role = interaction.guild.get_role(mod_role_id(interaction.guild.id))
         staff_mention = staff_role.mention if staff_role else "@Tournament Management"
 
         match["pending_rehost"] = {
@@ -435,7 +436,8 @@ class RehostApproveButton(discord.ui.Button):
         other_captain_id = rehost["other_captain_id"]
         user_id = interaction.user.id
 
-        staff_role = interaction.guild.get_role(ROLE_ID)
+        from core.guild_config import mod_role_id
+        staff_role = interaction.guild.get_role(mod_role_id(interaction.guild.id))
         is_management = (
             interaction.user.guild_permissions.administrator
             or (staff_role and staff_role in interaction.user.roles)
@@ -546,7 +548,8 @@ class RehostDenyButton(discord.ui.Button):
         user_id = interaction.user.id
 
         is_captain = user_id == other_captain_id
-        staff_role = interaction.guild.get_role(ROLE_ID)
+        from core.guild_config import mod_role_id
+        staff_role = interaction.guild.get_role(mod_role_id(interaction.guild.id))
         is_management = (
             interaction.user.guild_permissions.administrator
             or (staff_role and staff_role in interaction.user.roles)
@@ -591,7 +594,8 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
     t1_player_ids = [p["discord_id"] for p in found_t1["players"]]
     t2_player_ids = [p["discord_id"] for p in found_t2["players"]]
 
-    staff_role = guild.get_role(ROLE_ID)
+    from core.guild_config import mod_role_id
+    staff_role = guild.get_role(mod_role_id(guild.id))
 
     # Find team roles (set at tournament start via seeding confirm)
     team_roles_map = found_tournament.get("team_roles", {}) or {}
@@ -645,9 +649,10 @@ async def create_match(guild: discord.Guild, found_t1: dict, found_t2: dict, fou
         category=match_cat,
     )
 
-    match_id = str(uuid.uuid4())[:8]
+    match_id = f"{guild.id}-{str(uuid.uuid4())[:8]}"
     match = {
         "match_id": match_id,
+        "guild_id": guild.id,
         "format": fmt,
         "team_size": team_size,
         "teams": [

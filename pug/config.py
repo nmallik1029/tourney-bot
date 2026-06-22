@@ -55,11 +55,13 @@ FLAG_OBJ_TEAM_SHARE = 0.10
 
 
 def is_pug_admin():
-    """Check that the user has PUG_ADMIN_ROLE_ID or is an administrator."""
+    """Check that the user has this guild's pug-admin role or is an administrator."""
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.user.guild_permissions.administrator:
             return True
-        if any(r.id == PUG_ADMIN_ROLE_ID for r in interaction.user.roles):
+        from core.guild_config import pug_admin_role_id
+        rid = pug_admin_role_id(interaction.guild_id)
+        if rid and any(r.id == rid for r in interaction.user.roles):
             return True
         await interaction.response.send_message(
             "You don't have permission to use PUG admin commands.", ephemeral=True
@@ -72,14 +74,18 @@ def member_is_pug_admin(member: discord.Member) -> bool:
     """Non-decorator variant for use inside button callbacks."""
     if member.guild_permissions.administrator:
         return True
-    return any(r.id == PUG_ADMIN_ROLE_ID for r in member.roles)
+    from core.guild_config import pug_admin_role_id
+    rid = pug_admin_role_id(member.guild.id)
+    return bool(rid) and any(r.id == rid for r in member.roles)
 
 
 def member_is_pug_staff(member: discord.Member) -> bool:
     """Admin OR helper, used for everything except the two setup commands."""
     if member_is_pug_admin(member):
         return True
-    return any(r.id == PUG_HELPER_ROLE_ID for r in member.roles)
+    from core.guild_config import pug_helper_role_id
+    rid = pug_helper_role_id(member.guild.id)
+    return bool(rid) and any(r.id == rid for r in member.roles)
 
 
 def is_pug_staff():

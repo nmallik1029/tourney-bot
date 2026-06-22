@@ -1,5 +1,7 @@
 import discord
 
+from core.guild_views import GuildView
+from core.guild_ctx import current_guild_or_none
 from pug.config import MATCH_SIZE, BRAND
 from pug.storage import (
     pug_data,
@@ -55,7 +57,7 @@ async def refresh_queue_embed(bot):
         pass
 
 
-class QueueView(discord.ui.View):
+class QueueView(GuildView):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -248,7 +250,7 @@ def _next_stat(stat):
     return STAT_ORDER[(STAT_ORDER.index(stat) + 1) % len(STAT_ORDER)]
 
 
-class LeaderboardView(discord.ui.View):
+class LeaderboardView(GuildView):
     """Ephemeral leaderboard: one stat-cycle button + Prev/Next paging (single row)."""
 
     def __init__(self, stat="elo", page=0):
@@ -326,7 +328,12 @@ class _BigCycleButton(discord.ui.Button):
     """Persistent single stat-cycle button for the big board (state lives in config)."""
 
     def __init__(self):
-        cur = pug_data["config"].get("bigboard_stat", "elo")
+        # Built once (no guild context) when the persistent view is registered at startup,
+        # and again per-guild when the board is posted/refreshed. The startup label is just
+        # a template -- only the custom_id matters for routing -- so fall back to "elo".
+        cur = "elo"
+        if current_guild_or_none() is not None:
+            cur = pug_data["config"].get("bigboard_stat", "elo")
         if cur not in STATS:
             cur = "elo"
         super().__init__(label=f"Stat: {SHORT_LABELS[cur]}", style=discord.ButtonStyle.primary,
@@ -356,7 +363,7 @@ class _BigPageButton(discord.ui.Button):
         await interaction.response.edit_message(embed=build_bigboard_embed(), view=BigBoardView())
 
 
-class BigBoardView(discord.ui.View):
+class BigBoardView(GuildView):
     """Persistent big leaderboard: one stat-cycle button + 50-at-a-time paging. State is
     shared (stored in config), so the whole channel sees the same view."""
 

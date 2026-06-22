@@ -1,5 +1,6 @@
 import discord
 
+from core.guild_views import GuildView
 from pug.storage import pug_matches, get_elo
 from views.pug_sub import RequestSubButton
 
@@ -47,7 +48,7 @@ def build_draft_embed(match: dict) -> discord.Embed:
     return embed
 
 
-class PugDraftView(discord.ui.View):
+class PugDraftView(GuildView):
     def __init__(self, match_key: str):
         super().__init__(timeout=None)
         self.match_key = match_key

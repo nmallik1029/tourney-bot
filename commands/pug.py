@@ -53,7 +53,6 @@ from views.pug_queue import (
 @bot.tree.command(
     name="link",
     description="Link a player's single Krunker account + region (replaces any existing one).",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(
@@ -91,7 +90,6 @@ async def link(interaction: discord.Interaction, member: discord.Member, usernam
 @bot.tree.command(
     name="unlink",
     description="Remove a Krunker username from a player.",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(member="The Discord member", username="The Krunker username to remove")
@@ -109,7 +107,6 @@ async def unlink(interaction: discord.Interaction, member: discord.Member, usern
 @bot.tree.command(
     name="pug-setup",
     description="Create the PUG category, #queue, Queue VC, and #results channels.",
-    guild=guild_object(),
 )
 @is_pug_admin()
 async def pug_setup(interaction: discord.Interaction):
@@ -152,7 +149,8 @@ async def pug_setup(interaction: discord.Interaction):
         everyone: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
     }
-    for rid in (PUG_ADMIN_ROLE_ID, PUG_HELPER_ROLE_ID):
+    from core.guild_config import pug_admin_role_id, pug_helper_role_id
+    for rid in (pug_admin_role_id(guild.id), pug_helper_role_id(guild.id)):
         role = guild.get_role(rid) if rid else None
         if role:
             staff_overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
@@ -198,7 +196,6 @@ async def pug_setup(interaction: discord.Interaction):
 @bot.tree.command(
     name="pug-set-account-link",
     description="Set the channel players are pointed to for linking their Krunker account.",
-    guild=guild_object(),
 )
 @is_pug_admin()
 @app_commands.describe(channel="The #account-link channel")
@@ -217,7 +214,6 @@ async def pug_set_account_link(interaction: discord.Interaction, channel: discor
 @bot.tree.command(
     name="pug-set-review-channel",
     description="Set the channel where account-link requests are sent for review.",
-    guild=guild_object(),
 )
 @is_pug_admin()
 @app_commands.describe(channel="The link-requests review channel (admin-only)")
@@ -232,7 +228,6 @@ async def pug_set_review_channel(interaction: discord.Interaction, channel: disc
 @bot.tree.command(
     name="force-pop",
     description="Force the queue to pop now with whoever is queued (min 2).",
-    guild=guild_object(),
 )
 @is_pug_staff()
 async def force_pop(interaction: discord.Interaction):
@@ -252,7 +247,6 @@ async def force_pop(interaction: discord.Interaction):
 @bot.tree.command(
     name="pug-reset-counter",
     description="Reset the queue number counter (so test pugs don't keep incrementing).",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(value="New counter value (default 0, so the next match is 0001)")
@@ -267,7 +261,6 @@ async def pug_reset_counter(interaction: discord.Interaction, value: int = 0):
 @bot.tree.command(
     name="check",
     description="Check a player's PUG profile: usernames, bans, and no-adds.",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(user="The member to look up")
@@ -324,7 +317,6 @@ async def check(interaction: discord.Interaction, user: discord.Member):
 @bot.tree.command(
     name="simulate",
     description="Simulate a draft with fake players (you control both captains). Testing only.",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(format="Match format to simulate")
@@ -342,7 +334,6 @@ async def simulate(interaction: discord.Interaction, format: app_commands.Choice
 @bot.tree.command(
     name="pug-cleanup",
     description="Delete leftover match channels orphaned by a restart/crash.",
-    guild=guild_object(),
 )
 @is_pug_staff()
 async def pug_cleanup(interaction: discord.Interaction):
@@ -360,7 +351,7 @@ def _until_from_hours(hours: float | None) -> float | None:
     return time.time() + hours * 3600
 
 
-@bot.tree.command(name="noadd", description="No-add a player (block them from queueing).", guild=guild_object())
+@bot.tree.command(name="noadd", description="No-add a player (block them from queueing).")
 @is_pug_staff()
 @app_commands.describe(user="Player to no-add", reason="Reason (optional)", hours="Duration in hours (blank = permanent)")
 async def noadd(interaction: discord.Interaction, user: discord.Member, reason: str = "", hours: float = 0.0):
@@ -374,7 +365,7 @@ async def noadd(interaction: discord.Interaction, user: discord.Member, reason: 
     )
 
 
-@bot.tree.command(name="unnoadd", description="Remove a player's no-add.", guild=guild_object())
+@bot.tree.command(name="unnoadd", description="Remove a player's no-add.")
 @is_pug_staff()
 @app_commands.describe(user="Player to un-no-add")
 async def unnoadd(interaction: discord.Interaction, user: discord.Member):
@@ -385,7 +376,7 @@ async def unnoadd(interaction: discord.Interaction, user: discord.Member):
 
 
 # ELO management
-@bot.tree.command(name="elo-set", description="Set a player's ELO to a specific value.", guild=guild_object())
+@bot.tree.command(name="elo-set", description="Set a player's ELO to a specific value.")
 @is_pug_staff()
 @app_commands.describe(user="Player", elo="Desired ELO")
 async def elo_set(interaction: discord.Interaction, user: discord.Member, elo: int):
@@ -398,7 +389,6 @@ async def elo_set(interaction: discord.Interaction, user: discord.Member, elo: i
 @bot.tree.command(
     name="elo-reset",
     description="Reset ELO to 1000 for one player, or everyone if no user is given.",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(user="Player to reset (leave blank to reset EVERYONE)")
@@ -451,7 +441,6 @@ class ConfirmResetView(discord.ui.View):
 @bot.tree.command(
     name="pug-reset-profile",
     description="Wipe a player's linked usernames and region (ELO is untouched).",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(user="Player whose linked accounts + region to clear")
@@ -469,7 +458,6 @@ async def pug_reset_profile(interaction: discord.Interaction, user: discord.Memb
 @bot.tree.command(
     name="pug-reset-rating",
     description="Reset a player's average CKL rating (ELO, W/L, K/D, OBJ untouched).",
-    guild=guild_object(),
 )
 @is_pug_staff()
 @app_commands.describe(user="Player whose average CKL rating to reset")
@@ -483,7 +471,7 @@ async def pug_reset_rating(interaction: discord.Interaction, user: discord.Membe
 
 
 # Match control
-@bot.tree.command(name="match-fix", description="Manually set the winner of a live match.", guild=guild_object())
+@bot.tree.command(name="match-fix", description="Manually set the winner of a live match.")
 @is_pug_staff()
 @app_commands.describe(match_id="Match number (e.g. 001)", winner="Winning team")
 @app_commands.choices(winner=[
@@ -508,7 +496,6 @@ async def match_fix(interaction: discord.Interaction, match_id: str, winner: app
 @bot.tree.command(
     name="cancel",
     description="Admin: cancel a match instantly. Captain: ask the other captain to agree.",
-    guild=guild_object(),
 )
 @app_commands.describe(match_id="Match number (e.g. 001)")
 async def cancel(interaction: discord.Interaction, match_id: str):
@@ -541,7 +528,7 @@ async def cancel(interaction: discord.Interaction, match_id: str):
 
 
 # Public info
-@bot.tree.command(name="leaderboard", description="Show the PUG leaderboard (top 10, switch stats).", guild=guild_object())
+@bot.tree.command(name="leaderboard", description="Show the PUG leaderboard (top 10, switch stats).")
 async def leaderboard(interaction: discord.Interaction):
     embed, _, _ = build_normal_leaderboard("elo", 0)
     await interaction.response.send_message(embed=embed, view=LeaderboardView("elo", 0))
@@ -550,7 +537,6 @@ async def leaderboard(interaction: discord.Interaction):
 @bot.tree.command(
     name="pug-bigboard",
     description="Post the big standing leaderboard display in this channel (admin).",
-    guild=guild_object(),
 )
 @is_pug_admin()
 async def pug_bigboard(interaction: discord.Interaction):
@@ -568,7 +554,7 @@ async def pug_bigboard(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="live", description="Show all live PUG matches.", guild=guild_object())
+@bot.tree.command(name="live", description="Show all live PUG matches.")
 async def live(interaction: discord.Interaction):
     active = [m for m in pug_matches.values() if m.get("phase") != "done"]
     if not active:
@@ -595,7 +581,7 @@ async def live(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="remove", description="Remove a player from the queue (staff only).", guild=guild_object())
+@bot.tree.command(name="remove", description="Remove a player from the queue (staff only).")
 @is_pug_staff()
 @app_commands.describe(user="The member to remove from the queue")
 async def remove(interaction: discord.Interaction, user: discord.Member):
@@ -614,7 +600,7 @@ async def remove(interaction: discord.Interaction, user: discord.Member):
     )
 
 
-@bot.tree.command(name="rank", description="Show a player's PUG rank card.", guild=guild_object())
+@bot.tree.command(name="rank", description="Show a player's PUG rank card.")
 @app_commands.describe(user="The player to look up (defaults to you)")
 async def rank(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.response.defer()
@@ -656,7 +642,7 @@ async def rank(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.followup.send(embed=embed, file=discord.File(graph, filename="elo.png"))
 
 
-@bot.tree.command(name="flag", description="Manually flag a player for low K/D or OBJ (staff only).", guild=guild_object())
+@bot.tree.command(name="flag", description="Manually flag a player for low K/D or OBJ (staff only).")
 @is_pug_staff()
 @app_commands.describe(user="The player to flag", reason="What they're flagged for")
 @app_commands.choices(reason=[
@@ -688,7 +674,7 @@ async def flag(interaction: discord.Interaction, user: discord.Member, reason: a
     )
 
 
-@bot.tree.command(name="unflag", description="Remove a flag from a player (staff only).", guild=guild_object())
+@bot.tree.command(name="unflag", description="Remove a flag from a player (staff only).")
 @is_pug_staff()
 @app_commands.describe(
     user="The player to unflag",
@@ -730,7 +716,7 @@ async def unflag(
     )
 
 
-@bot.tree.command(name="pug-set-flags-channel", description="Set the channel where auto-flags are posted.", guild=guild_object())
+@bot.tree.command(name="pug-set-flags-channel", description="Set the channel where auto-flags are posted.")
 @is_pug_admin()
 @app_commands.describe(channel="The #flags channel")
 async def pug_set_flags_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -741,7 +727,7 @@ async def pug_set_flags_channel(interaction: discord.Interaction, channel: disco
     )
 
 
-@bot.tree.command(name="pug-set-flags-log-channel", description="Set the channel where manual /flag logs are posted.", guild=guild_object())
+@bot.tree.command(name="pug-set-flags-log-channel", description="Set the channel where manual /flag logs are posted.")
 @is_pug_admin()
 @app_commands.describe(channel="The #flags-log channel")
 async def pug_set_flags_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -755,7 +741,6 @@ async def pug_set_flags_log_channel(interaction: discord.Interaction, channel: d
 @bot.tree.command(
     name="pug-backfill-elo",
     description="Rebuild ELO-history graphs from old #results messages (admin only).",
-    guild=guild_object(),
 )
 @is_pug_admin()
 @app_commands.describe(channel="Results channel to scan (defaults to the configured #results)")

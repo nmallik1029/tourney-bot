@@ -1,6 +1,6 @@
 import re
 import discord
-from core.storage import load_config
+from core.guild_config import tournament_category_id, admin_category_id
 
 
 def safe_channel_name(name: str) -> str:
@@ -8,9 +8,8 @@ def safe_channel_name(name: str) -> str:
 
 
 def get_categories(guild: discord.Guild):
-    config = load_config()
-    t_cat_id = config.get("tournament_category_id")
-    a_cat_id = config.get("admin_category_id")
+    t_cat_id = tournament_category_id(guild.id)
+    a_cat_id = admin_category_id(guild.id)
     t_cat = guild.get_channel(t_cat_id) if t_cat_id else None
     a_cat = guild.get_channel(a_cat_id) if a_cat_id else None
     return t_cat, a_cat

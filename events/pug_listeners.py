@@ -3,8 +3,8 @@ import re
 import discord
 
 from core.bot_instance import bot
-from core.config import SERVER_ID
-from pug.storage import pug_matches, pug_data
+from core.guild_ctx import set_guild, guild_context
+from pug.storage import pug_matches, pug_data, all_guild_ids
 from pug.match import get_match_for_channel, mark_checked_in, cleanup_orphaned_channels, reset_queue_on_start
 from views.pug_queue import QueueView, BigBoardView
 from views.pug_link import AccountLinkView, LinkReviewView
@@ -14,26 +14,32 @@ _did_startup = False
 
 @bot.listen("on_ready")
 async def pug_on_ready():
-    """Re-register persistent views, reset the stale queue embed, and clean up orphaned
-    match channels. The one-time work runs only once."""
+    """Re-register persistent views, reset the stale queue embeds, and clean up orphaned
+    match channels in every guild. The one-time work runs only once."""
     global _did_startup
     bot.add_view(QueueView())
     bot.add_view(AccountLinkView())
     bot.add_view(BigBoardView())
-    # Re-register review buttons for any pending account-link requests
-    for rid in list(pug_data.get("link_requests", {}).keys()):
-        bot.add_view(LinkReviewView(rid))
+    # Re-register review buttons for any pending account-link requests, per guild.
+    for gid in all_guild_ids():
+        with guild_context(gid):
+            for rid in list(pug_data.get("link_requests", {}).keys()):
+                bot.add_view(LinkReviewView(rid))
 
     if _did_startup:
         return
     _did_startup = True
     try:
         await reset_queue_on_start(bot)
-        guild = bot.get_guild(SERVER_ID)
-        if guild:
-            n = await cleanup_orphaned_channels(guild)
+        # Clean orphaned match channels in each guild that has pug data configured.
+        for gid in all_guild_ids():
+            guild = bot.get_guild(gid)
+            if not guild:
+                continue
+            with guild_context(gid):
+                n = await cleanup_orphaned_channels(guild)
             if n:
-                print(f"[Pug] Cleaned up {n} orphaned match channel(s).")
+                print(f"[Pug] Cleaned up {n} orphaned match channel(s) in {guild.name}.")
     except Exception as e:
         print(f"[Pug] startup cleanup error: {e}")
 
@@ -43,6 +49,7 @@ async def pug_voice_checkin(member: discord.Member, before, after):
     """Mark a player checked in when they join their match's check-in VC."""
     if member.bot or not after.channel:
         return
+    set_guild(member.guild.id)
     for match in pug_matches.values():
         if match.get("phase") != "checkin":
             continue
@@ -59,9 +66,10 @@ async def pug_voice_checkin(member: discord.Member, before, after):
 async def pug_krunker_link(message: discord.Message):
     """Detect the host pasting a Krunker link in a pug match channel and post the
     join embed. Mirrors the tournament flow in events/messages.py (no casting)."""
-    if message.author.bot:
+    if message.author.bot or not message.guild:
         return
 
+    set_guild(message.guild.id)
     match = get_match_for_channel(message.channel.id)
     if not match or match.get("phase") != "host" or not match.get("host_captain_id"):
         return

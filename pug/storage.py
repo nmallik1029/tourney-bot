@@ -5,8 +5,14 @@ import time
 from pathlib import Path
 
 from pug.config import ELO_START
+from core.config import SERVER_ID
+from core.guild_ctx import current_guild
 
 PUG_FILE = Path("pug_data.json")
+
+# The guild that owned all data before the bot went multi-server. Legacy (flat) data
+# is migrated under this id so the original server keeps its ELO/links/bans.
+DEFAULT_GUILD = SERVER_ID
 
 # Reuse the same Gist the tournament side uses; PUG data lives in a separate file
 # (pug_data.json) within that Gist, so Railway redeploys don't wipe ELO/bans/links.
@@ -45,35 +51,9 @@ def _default_data() -> dict:
     }
 
 
-def load_pug_data() -> dict:
-    data = None
-    if GIST_TOKEN and GIST_ID:
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                f"https://api.github.com/gists/{GIST_ID}",
-                headers=_gist_headers(),
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                gist = json.loads(resp.read().decode())
-                files = gist.get("files", {})
-                if "pug_data.json" in files:
-                    data = json.loads(files["pug_data.json"]["content"])
-                    print("[PugStorage] Loaded pug data from Gist")
-        except Exception as e:
-            print(f"[PugStorage] Failed to load from Gist: {e}")
-
-    if data is None and PUG_FILE.exists():
-        try:
-            with open(PUG_FILE, "r") as f:
-                data = json.load(f)
-        except Exception as e:
-            print(f"[PugStorage] Failed to load pug_data.json: {e}")
-
-    if data is None:
-        data = _default_data()
-
-    # Backfill any missing top-level keys (forward-compat)
+def _backfill_guild(data: dict) -> dict:
+    """Bring one guild's data block up to the current shape (forward-compat + legacy
+    migrations). Mutates and returns it."""
     base = _default_data()
     for k, v in base.items():
         data.setdefault(k, v)
@@ -100,12 +80,58 @@ def load_pug_data() -> dict:
                     "at": (info or {}).get("at"),
                 }
     data.pop("bans", None)
-
     return data
 
 
+def _looks_flat(raw: dict) -> bool:
+    """Old single-server file had data keys (players/config/...) at the top level.
+    The new multi-server file is keyed by guild id, so a top-level 'players' means
+    we're looking at legacy data that needs wrapping under DEFAULT_GUILD."""
+    return isinstance(raw, dict) and ("players" in raw or "config" in raw)
+
+
+def load_pug_store() -> dict:
+    """Load the whole multi-guild store: {guild_id(str): per_guild_data}. Migrates a
+    legacy flat file by nesting it under the original server's id."""
+    raw = None
+    if GIST_TOKEN and GIST_ID:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers=_gist_headers(),
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                gist = json.loads(resp.read().decode())
+                files = gist.get("files", {})
+                if "pug_data.json" in files:
+                    raw = json.loads(files["pug_data.json"]["content"])
+                    print("[PugStorage] Loaded pug data from Gist")
+        except Exception as e:
+            print(f"[PugStorage] Failed to load from Gist: {e}")
+
+    if raw is None and PUG_FILE.exists():
+        try:
+            with open(PUG_FILE, "r") as f:
+                raw = json.load(f)
+        except Exception as e:
+            print(f"[PugStorage] Failed to load pug_data.json: {e}")
+
+    if raw is None:
+        store = {}
+    elif _looks_flat(raw):
+        print(f"[PugStorage] Migrating legacy flat pug data under guild {DEFAULT_GUILD}")
+        store = {str(DEFAULT_GUILD): raw}
+    else:
+        store = raw
+
+    for gid, gd in store.items():
+        _backfill_guild(gd)
+    return store
+
+
 def save_pug_data():
-    data_str = json.dumps(pug_data, indent=2, default=str)
+    data_str = json.dumps(pug_store, indent=2, default=str)
     with open(PUG_FILE, "w") as f:
         f.write(data_str)
     if GIST_TOKEN and GIST_ID:
@@ -124,11 +150,205 @@ def save_pug_data():
             print(f"[PugStorage] Failed to save to Gist: {e}")
 
 
-# Shared state
-pug_data: dict = load_pug_data()
-pug_queue: list[int] = []          # FIFO of Discord IDs currently queued (in-memory)
-pug_matches: dict[str, dict] = {}  # match_key -> live match state (in-memory)
-sim_players: dict[int, dict] = {}  # fake players for /simulate (never persisted)
+# ── Multi-guild state ────────────────────────────────────────────────────────────
+# Persisted, keyed by guild id (str). In-memory live state is keyed by guild id (int).
+pug_store: dict[str, dict] = load_pug_store()
+_queues: dict[int, list[int]] = {}      # guild_id -> FIFO of queued Discord ids
+_matches: dict[int, dict[str, dict]] = {}  # guild_id -> {match_key: live match}
+_sims: dict[int, dict[int, dict]] = {}  # guild_id -> {fake_id: fake player}
+
+
+def gdata(guild_id: int | None = None) -> dict:
+    """The persisted data block for a guild (defaults to the current context), created
+    and backfilled on first access."""
+    gid = current_guild() if guild_id is None else int(guild_id)
+    key = str(gid)
+    gd = pug_store.get(key)
+    if gd is None:
+        gd = _backfill_guild(_default_data())
+        pug_store[key] = gd
+    return gd
+
+
+def queue_for(guild_id: int | None = None) -> list[int]:
+    gid = current_guild() if guild_id is None else int(guild_id)
+    return _queues.setdefault(gid, [])
+
+
+def matches_for(guild_id: int | None = None) -> dict[str, dict]:
+    gid = current_guild() if guild_id is None else int(guild_id)
+    return _matches.setdefault(gid, {})
+
+
+def sims_for(guild_id: int | None = None) -> dict[int, dict]:
+    gid = current_guild() if guild_id is None else int(guild_id)
+    return _sims.setdefault(gid, {})
+
+
+def all_guild_ids() -> list[int]:
+    """Every guild that has persisted data or live state."""
+    ids = {int(g) for g in pug_store}
+    ids |= set(_queues) | set(_matches)
+    return list(ids)
+
+
+def iter_all_matches():
+    """Yield (guild_id, match) for every live match across all guilds (for the webhook,
+    which has no ambient guild until it identifies the match)."""
+    for gid, table in _matches.items():
+        for m in list(table.values()):
+            yield gid, m
+
+
+def clear_all_queues():
+    """Wipe every guild's in-memory queue (used on restart)."""
+    _queues.clear()
+
+
+def guild_for_dashboard_token(token: str) -> int | None:
+    """Find which guild a pug-dashboard token belongs to (tokens are per-guild now)."""
+    if not token:
+        return None
+    for gid, gd in pug_store.items():
+        if gd.get("dashboard_token") == token:
+            return int(gid)
+    return None
+
+
+class _GuildDictProxy:
+    """Dict-like view of the current guild's persisted data, so existing call sites
+    (`pug_data["players"]`, `pug_data.get(...)`, ...) keep working unchanged."""
+
+    def _d(self) -> dict:
+        return gdata()
+
+    def __getitem__(self, k):
+        return self._d()[k]
+
+    def __setitem__(self, k, v):
+        self._d()[k] = v
+
+    def __contains__(self, k):
+        return k in self._d()
+
+    def get(self, k, default=None):
+        return self._d().get(k, default)
+
+    def setdefault(self, k, default=None):
+        return self._d().setdefault(k, default)
+
+    def pop(self, k, *args):
+        return self._d().pop(k, *args)
+
+    def keys(self):
+        return self._d().keys()
+
+    def values(self):
+        return self._d().values()
+
+    def items(self):
+        return self._d().items()
+
+
+class _GuildListProxy:
+    """List-like view of the current guild's in-memory queue."""
+
+    def _l(self) -> list:
+        return queue_for()
+
+    def __len__(self):
+        return len(self._l())
+
+    def __iter__(self):
+        return iter(self._l())
+
+    def __contains__(self, x):
+        return x in self._l()
+
+    def __getitem__(self, i):
+        return self._l()[i]
+
+    def __bool__(self):
+        return bool(self._l())
+
+    def append(self, x):
+        self._l().append(x)
+
+    def remove(self, x):
+        self._l().remove(x)
+
+    def insert(self, i, x):
+        self._l().insert(i, x)
+
+    def pop(self, i=-1):
+        return self._l().pop(i)
+
+    def index(self, x):
+        return self._l().index(x)
+
+    def clear(self):
+        self._l().clear()
+
+
+class _GuildMatchProxy:
+    """Dict-like view of the current guild's live matches (keyed by match key)."""
+
+    def _m(self) -> dict:
+        return matches_for()
+
+    def __getitem__(self, k):
+        return self._m()[k]
+
+    def __setitem__(self, k, v):
+        self._m()[k] = v
+
+    def __contains__(self, k):
+        return k in self._m()
+
+    def get(self, k, default=None):
+        return self._m().get(k, default)
+
+    def pop(self, k, *args):
+        return self._m().pop(k, *args)
+
+    def values(self):
+        return self._m().values()
+
+    def items(self):
+        return self._m().items()
+
+    def keys(self):
+        return self._m().keys()
+
+
+class _GuildSimProxy:
+    """Dict-like view of the current guild's simulation players."""
+
+    def _s(self) -> dict:
+        return sims_for()
+
+    def __getitem__(self, k):
+        return self._s()[k]
+
+    def __setitem__(self, k, v):
+        self._s()[k] = v
+
+    def __contains__(self, k):
+        return k in self._s()
+
+    def get(self, k, default=None):
+        return self._s().get(k, default)
+
+    def clear(self):
+        self._s().clear()
+
+
+# Proxies resolve to the guild bound in the current context. Existing imports
+# (`from pug.storage import pug_data, pug_queue, pug_matches, sim_players`) are unchanged.
+pug_data = _GuildDictProxy()
+pug_queue = _GuildListProxy()
+pug_matches = _GuildMatchProxy()
+sim_players = _GuildSimProxy()
 
 
 def in_active_match(discord_id: int) -> dict | None:

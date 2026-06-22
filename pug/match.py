@@ -8,6 +8,7 @@ import urllib.parse
 import discord
 
 from core.config import MAPS, RAILWAY_BASE
+from core.guild_ctx import guild_context
 from views.pickban import HostClientView, WEBHOOK_URL, MAP_IDS
 from pug.config import (
     MATCH_SIZE,
@@ -37,8 +38,8 @@ def _add_spectator_overwrites(overwrites: dict, guild: discord.Guild, is_vc: boo
     """Grant staff + spectator/caster roles the SAME access players get on a pug
     channel: view/connect/speak/screenshare. The bot's own buttons gate by player
     identity, so these roles still can't draft, vote, or otherwise drive the match."""
-    from pug.config import PUG_ADMIN_ROLE_ID, PUG_HELPER_ROLE_ID, PUG_SPECTATOR_ROLE_ID
-    role_ids = {PUG_ADMIN_ROLE_ID, PUG_HELPER_ROLE_ID, PUG_SPECTATOR_ROLE_ID}
+    from core.guild_config import pug_admin_role_id, pug_helper_role_id, pug_spectator_role_id
+    role_ids = {pug_admin_role_id(guild.id), pug_helper_role_id(guild.id), pug_spectator_role_id(guild.id)}
     for rid in role_ids:
         if not rid:
             continue
@@ -108,11 +109,14 @@ async def cleanup_orphaned_channels(guild: discord.Guild) -> int:
 
 
 async def reset_queue_on_start(bot):
-    """After a restart the in-memory queue is empty; re-render the #queue embed so it
-    doesn't show a stale roster."""
-    pug_queue.clear()
+    """After a restart the in-memory queues are empty; clear them and re-render each
+    guild's #queue embed so none shows a stale roster."""
+    from pug.storage import clear_all_queues, all_guild_ids
+    clear_all_queues()
     from views.pug_queue import refresh_queue_embed
-    await refresh_queue_embed(bot)
+    for gid in all_guild_ids():
+        with guild_context(gid):
+            await refresh_queue_embed(bot)
 
 
 def get_match_for_channel(channel_id: int) -> dict | None:
@@ -650,14 +654,15 @@ async def start_draft(match: dict, bot):
 
     # Captains: players with the captain-priority role rank first, then by ELO.
     # Random shuffle first so ties within the same (role, ELO) break randomly.
-    from pug.config import PUG_CAPTAIN_ROLE_ID
+    from core.guild_config import pug_captain_role_id
     guild_for_roles = bot.get_guild(match["guild_id"])
+    captain_rid = pug_captain_role_id(match["guild_id"])
 
     def _has_priority(pid):
-        if not PUG_CAPTAIN_ROLE_ID or not guild_for_roles:
+        if not captain_rid or not guild_for_roles:
             return False
         m = guild_for_roles.get_member(pid)
-        return bool(m and any(r.id == PUG_CAPTAIN_ROLE_ID for r in m.roles))
+        return bool(m and any(r.id == captain_rid for r in m.roles))
 
     ordered = match["players"][:]
     random.shuffle(ordered)
@@ -1185,7 +1190,11 @@ async def _detect_and_post_flags(bot, players, winner_krunker, loser_krunker, wi
 
 
 async def try_handle_pug_match_end(payload: dict) -> bool:
-    """Called first by the Krunker webhook. Returns True if this was a PUG match."""
+    """Called first by the Krunker webhook. Returns True if this was a PUG match.
+
+    The webhook is shared by every server, so we search live matches across all guilds,
+    identify which guild's match this result belongs to, then run the rest in that
+    guild's context (its players, config channels, ELO, and flags)."""
     if payload.get("type") != "match_end":
         return False
 
@@ -1196,52 +1205,67 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
     if len(teams) < 2 or winner_team_num is None:
         return False
 
-    active = [m for m in pug_matches.values() if m.get("phase") == "host" and m.get("captains")]
+    from pug.storage import iter_all_matches
+    candidates = [
+        (gid, m) for gid, m in iter_all_matches()
+        if m.get("phase") == "host" and m.get("captains")
+    ]
     payload_team_names = {
         str(teams[0].get("name", "")).strip().lower(),
         str(teams[1].get("name", "")).strip().lower(),
     }
     print(f"[Pug] match_end: teams={[t.get('name') for t in teams]} winner={winner_team_num} "
-          f"players={[p.get('name') for p in players]} | active matches={len(active)}")
+          f"players={[p.get('name') for p in players]} | active matches={len(candidates)}")
 
-    # Map payload player krunker names -> discord ids, grouped by team number.
+    # 1) Match by player identity overlap (robust - independent of team-name strings).
+    #    Names resolve per-guild, so map them inside each candidate's context.
+    match = None
+    match_gid = None
+    best = 0
+    for gid, m in candidates:
+        with guild_context(gid):
+            ids = {username_to_discord(p.get("name", "")) for p in players}
+            ids.discard(None)
+        overlap = len(set(m.get("players", [])) & ids)
+        if overlap > best:
+            best, match, match_gid = overlap, m, gid
+
+    # 2) Fallback: captain primary usernames == reported team names.
+    if not match:
+        for gid, m in candidates:
+            with guild_context(gid):
+                cap_names = {
+                    primary_username(m["captains"][0], "").strip().lower(),
+                    primary_username(m["captains"][1], "").strip().lower(),
+                }
+            if cap_names == payload_team_names and "" not in cap_names:
+                match, match_gid = m, gid
+                break
+
+    if not match:
+        print(f"[Pug] match_end: no PUG match found across {len(candidates)} active matches. "
+              f"payload team names={payload_team_names}. "
+              f"(Are all players linked via /link? Does a team name match a captain's primary username?)")
+        return False
+
+    # Everything below operates on the winning guild's data.
+    with guild_context(match_gid):
+        await _finalize_pug_match_end(match, payload, teams, players, winner_team_num, map_name)
+    return True
+
+
+async def _finalize_pug_match_end(match, payload, teams, players, winner_team_num, map_name):
+    """Record stats, post results/flags, and tear down -- runs inside the match's guild
+    context (set by the caller)."""
+    from core.bot_instance import bot
+    from pug.elo import apply_match
+
+    # Map payload player krunker names -> discord ids (in this guild), grouped by team.
     team_player_ids: dict = {}
-    all_payload_ids = set()
     for p in players:
         did = username_to_discord(p.get("name", ""))
         if did is not None:
             team_player_ids.setdefault(p.get("team"), set()).add(did)
-            all_payload_ids.add(did)
-
-    # 1) Match by player identity overlap (robust - independent of team-name strings).
-    match = None
-    if all_payload_ids:
-        best = 0
-        for m in active:
-            overlap = len(set(m.get("players", [])) & all_payload_ids)
-            if overlap > best:
-                best, match = overlap, m
-
-    # 2) Fallback: captain primary usernames == reported team names.
-    if not match:
-        for m in active:
-            c1, c2 = m["captains"]
-            cap_names = {
-                primary_username(c1, "").strip().lower(),
-                primary_username(c2, "").strip().lower(),
-            }
-            if cap_names == payload_team_names and "" not in cap_names:
-                match = m
-                break
-
-    if not match:
-        print(f"[Pug] match_end: no PUG match found. payload team names={payload_team_names}; "
-              f"active captains={[[primary_username(c, '') for c in m['captains']] for m in active]}. "
-              f"(Are all players linked via /link? Does a team name match a captain's primary username?)")
-        return False
-
-    from core.bot_instance import bot
-    from pug.elo import apply_match
 
     cap1, cap2 = match["captains"]
 

@@ -18,7 +18,7 @@ FAKE_PLAYERS = [
 ]
 
 
-@bot.tree.command(name="test-scoreboard", description="Post a test scoreboard to see how it looks.", guild=guild_object())
+@bot.tree.command(name="test-scoreboard", description="Post a test scoreboard to see how it looks.")
 @is_authorized()
 @app_commands.describe(
     team_size="Team size for the test scoreboard",
@@ -63,7 +63,6 @@ async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_
 @bot.tree.command(
     name="test-match",
     description="Create a test match channel with full pick/ban flow.",
-    guild=guild_object(),
 )
 @is_authorized()
 @app_commands.describe(
@@ -91,13 +90,15 @@ async def test_match_cmd(
     is_casted = casted.value == "yes" if casted else False
     user_id = interaction.user.id
     guild = interaction.guild
-    match_id = f"test-{str(uuid.uuid4())[:6]}"
+    test_tournament_id = f"TEST-{guild.id}"
+    match_id = f"test-{guild.id}-{str(uuid.uuid4())[:6]}"
 
     match_cat = discord.utils.get(guild.categories, name="Matchrooms")
     if not match_cat:
         match_cat = await guild.create_category("Matchrooms")
 
-    staff_role = guild.get_role(ROLE_ID)
+    from core.guild_config import mod_role_id
+    staff_role = guild.get_role(mod_role_id(guild.id))
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
@@ -122,8 +123,9 @@ async def test_match_cmd(
                 category=match_cat,
             )
         caster_channel_id = caster_ch.id
-        tournaments["TEST"] = {
-            "id": "TEST",
+        tournaments[test_tournament_id] = {
+            "id": test_tournament_id,
+            "guild_id": guild.id,
             "name": "Test Tournament",
             "caster_channel_id": caster_channel_id,
         }
@@ -141,7 +143,8 @@ async def test_match_cmd(
         "step": 0,
         "current_map_index": 0,
         "channel_id": channel.id,
-        "tournament_id": "TEST",
+        "guild_id": guild.id,
+        "tournament_id": test_tournament_id,
         "updates_channel_id": channel.id,
         "challonge_match_id": None,
         "challonge_id": None,
@@ -176,13 +179,14 @@ async def test_match_cmd(
 @bot.tree.command(
     name="test-match-cleanup",
     description="Remove all test matches and their channels.",
-    guild=guild_object(),
 )
 @is_authorized()
 async def test_match_cleanup_cmd(interaction: discord.Interaction):
     removed = [
         mid for mid, m in list(active_matches.items())
-        if mid.startswith("test-")
+        if mid.startswith(f"test-{interaction.guild.id}-") or (
+            mid.startswith("test-") and m.get("guild_id") == interaction.guild.id
+        )
     ]
     deleted_channels = 0
     for mid in removed:
@@ -197,7 +201,7 @@ async def test_match_cleanup_cmd(interaction: discord.Interaction):
         await caster_ch.delete()
         deleted_channels += 1
 
-    tournaments.pop("TEST", None)
+    tournaments.pop(f"TEST-{interaction.guild.id}", None)
 
     await interaction.response.send_message(
         f"Removed {len(removed)} test match(es) and {deleted_channels} channel(s)." if removed else "No test matches found.",

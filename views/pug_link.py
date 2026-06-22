@@ -2,6 +2,7 @@ import uuid
 
 import discord
 
+from core.guild_views import GuildView, GuildModal
 from pug.config import VALID_REGIONS, BRAND, member_is_pug_staff
 from pug.storage import (
     pug_data,
@@ -31,7 +32,7 @@ def build_account_link_embed() -> discord.Embed:
     return embed
 
 
-class AccountLinkView(discord.ui.View):
+class AccountLinkView(GuildView):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -45,7 +46,7 @@ class AccountLinkView(discord.ui.View):
         await interaction.response.send_modal(LinkRequestModal())
 
 
-class LinkRequestModal(discord.ui.Modal, title="Link Your Krunker Account"):
+class LinkRequestModal(GuildModal, title="Link Your Krunker Account"):
     username = discord.ui.TextInput(
         label="Krunker Username - CASE-SENSITIVE!!",
         placeholder="EXACT case, e.g. xWater not xwater",
@@ -105,7 +106,7 @@ async def post_link_request(bot, user_id: int, username: str, region: str) -> st
     return rid
 
 
-class LinkReviewView(discord.ui.View):
+class LinkReviewView(GuildView):
     def __init__(self, rid: str):
         super().__init__(timeout=None)
         self.add_item(LinkAcceptButton(rid))
@@ -188,7 +189,7 @@ class LinkDenyButton(discord.ui.Button):
         await interaction.response.send_modal(LinkDenyModal(self.rid))
 
 
-class LinkDenyModal(discord.ui.Modal, title="Deny Link Request"):
+class LinkDenyModal(GuildModal, title="Deny Link Request"):
     reason = discord.ui.TextInput(
         label="Reason (optional)", style=discord.TextStyle.paragraph, required=False, max_length=300
     )

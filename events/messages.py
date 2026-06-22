@@ -16,6 +16,7 @@ class CasterReleaseView(discord.ui.View):
             (
                 m for m in active_matches.values()
                 if m.get("pending_caster_link", {}).get("caster_message_id") == interaction.message.id
+                and (not m.get("guild_id") or m.get("guild_id") == interaction.guild.id)
             ),
             None,
         )
@@ -23,7 +24,11 @@ class CasterReleaseView(discord.ui.View):
             await interaction.response.send_message("No pending caster link found.", ephemeral=True)
             return
 
-        caster_role = interaction.guild.get_role(CASTER_ROLE_ID) if interaction.guild else None
+        from core.guild_config import caster_role_id
+        caster_role = (
+            interaction.guild.get_role(caster_role_id(interaction.guild.id))
+            if interaction.guild else None
+        )
         if (
             not interaction.user.guild_permissions.administrator
             and (not caster_role or caster_role not in interaction.user.roles)
@@ -77,7 +82,11 @@ async def on_message(message: discord.Message):
 
     # Krunker link handling in pick/ban match channels
     match_for_channel = next(
-        (m for m in active_matches.values() if m.get("channel_id") == message.channel.id),
+        (
+            m for m in active_matches.values()
+            if m.get("channel_id") == message.channel.id
+            and (not m.get("guild_id") or m.get("guild_id") == message.guild.id)
+        ),
         None,
     )
     if match_for_channel and match_for_channel.get("host_captain_id"):
@@ -155,7 +164,8 @@ async def on_message(message: discord.Message):
                 caster_ch = bot.get_channel(t.get("caster_channel_id")) if t else None
 
                 if caster_ch:
-                    caster_role = message.guild.get_role(CASTER_ROLE_ID)
+                    from core.guild_config import caster_role_id
+                    caster_role = message.guild.get_role(caster_role_id(message.guild.id))
                     caster_ping = caster_role.mention if caster_role else ""
 
                     caster_embed = discord.Embed(

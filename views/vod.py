@@ -18,7 +18,7 @@ class VODSubmitModal(discord.ui.Modal, title="Submit VOD"):
 
     async def on_submit(self, interaction: discord.Interaction):
         t = tournaments.get(self.tournament_id)
-        if not t:
+        if not t or t.get("guild_id") != interaction.guild.id:
             await interaction.response.send_message("Tournament not found.", ephemeral=True)
             return
 
@@ -78,6 +78,9 @@ class VODSubmitButton(discord.ui.Button):
 
         # Check if already submitted
         t = tournaments.get(self.tournament_id)
+        if not t or t.get("guild_id") != interaction.guild.id:
+            await interaction.response.send_message("Tournament not found.", ephemeral=True)
+            return
         if t:
             team = next((tm for tm in t["teams"] if tm["team_id"] == self.team_id), None)
             if team and str(self.player_discord_id) in team.get("vod_submissions", {}):

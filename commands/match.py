@@ -8,12 +8,15 @@ from core.storage import tournaments, active_matches
 @bot.tree.command(
     name="cast",
     description="Toggle casting mode for the match in this channel.",
-    guild=guild_object(),
 )
 @is_authorized()
 async def cast_cmd(interaction: discord.Interaction):
     match = next(
-        (m for m in active_matches.values() if m.get("channel_id") == interaction.channel.id),
+        (
+            m for m in active_matches.values()
+            if m.get("channel_id") == interaction.channel.id
+            and (not m.get("guild_id") or m.get("guild_id") == interaction.guild.id)
+        ),
         None,
     )
     if not match:
@@ -32,13 +35,12 @@ async def cast_cmd(interaction: discord.Interaction):
 @bot.tree.command(
     name="bracket",
     description="Get the admin bracket panel link to start matches.",
-    guild=guild_object(),
 )
 @is_authorized()
 @app_commands.describe(tournament_id="The tournament ID")
 async def bracket_cmd(interaction: discord.Interaction, tournament_id: str):
     t_id = tournament_id.upper()
-    if t_id not in tournaments:
+    if t_id not in tournaments or tournaments[t_id].get("guild_id") != interaction.guild.id:
         await interaction.response.send_message(f"Tournament `{t_id}` not found.", ephemeral=True)
         return
 
