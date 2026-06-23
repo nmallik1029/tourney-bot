@@ -601,11 +601,11 @@ async def remove(interaction: discord.Interaction, user: discord.Member):
     )
 
 
-# ── /rank: a Stats tab (the numbers) + per-stat trend graphs you switch with buttons ──
-# "stats" -> the data page; the rest -> just the graph for that stat.
-RANK_STAT_ORDER = ["stats", "elo", "kd", "rating", "obj", "wr"]
-RANK_STAT_LABELS = {"stats": "Stats", "elo": "ELO", "kd": "K/D",
-                    "rating": "CKL Rating", "obj": "Avg OBJ", "wr": "Win Rate"}
+# ── /rank: the stat numbers + a per-stat trend graph you switch with buttons ─────
+# Five stats -> one row of buttons; the numbers show on every tab, the graph swaps.
+RANK_STAT_ORDER = ["elo", "kd", "rating", "obj", "wr"]
+RANK_STAT_LABELS = {"elo": "ELO", "kd": "K/D", "rating": "CKL Rating",
+                    "obj": "Avg OBJ", "wr": "Win Rate"}
 
 
 def _rank_points(p: dict, stat_key: str) -> list:
@@ -621,8 +621,8 @@ def _rank_points(p: dict, stat_key: str) -> list:
 
 
 def build_rank_card(guild: discord.Guild, member: discord.Member, stat_key: str):
-    """Build (embed, file) for a player's rank card. The Stats tab shows the numbers (no
-    image); every other tab shows just that stat's graph (no fields)."""
+    """Build (embed, file): the player's stat numbers as fields on every tab, plus the
+    graph for the selected stat as the image."""
     from pug.graph import draw_stat_graph
     from pug.backgrounds import get_background_bytes
 
@@ -630,32 +630,27 @@ def build_rank_card(guild: discord.Guild, member: discord.Member, stat_key: str)
     username = primary_username(member.id, member.display_name)
     region = (p.get("region") or "").upper()
     region_tag = f" [{region}]" if region else ""
+    elo = p.get("elo", ELO_START)
+    wins, losses = p.get("wins", 0), p.get("losses", 0)
+    kills, deaths = p.get("kills", 0), p.get("deaths", 0)
+    games = p.get("games", 0)
+    kd_str = f"{kills / deaths:.2f}" if deaths else f"{float(kills):.0f}"
+    avg_obj = round(p.get("obj", 0) / games) if games else 0
+    rgames = p.get("rating_games", 0)
+    avg_rating = round(p.get("rating_sum", 0.0) / rgames, 2) if rgames else 0.0
+    peak = max(p.get("peak_elo", elo), elo, *(p.get("elo_history") or [elo]))
 
     embed = discord.Embed(title=f"Ranked Data for {username}{region_tag}", color=0x5865F2)
-
-    if stat_key == "stats":
-        # Only the Stats tab gets the avatar thumbnail -- on the graph tabs there are no
-        # fields beside it, so a thumbnail would leave an empty band above the chart.
-        embed.set_thumbnail(url=member.display_avatar.url)
-        elo = p.get("elo", ELO_START)
-        wins, losses = p.get("wins", 0), p.get("losses", 0)
-        kills, deaths = p.get("kills", 0), p.get("deaths", 0)
-        games = p.get("games", 0)
-        kd_str = f"{kills / deaths:.2f}" if deaths else f"{float(kills):.0f}"
-        avg_obj = round(p.get("obj", 0) / games) if games else 0
-        rgames = p.get("rating_games", 0)
-        avg_rating = round(p.get("rating_sum", 0.0) / rgames, 2) if rgames else 0.0
-        peak = max(p.get("peak_elo", elo), elo, *(p.get("elo_history") or [elo]))
-        embed.add_field(name="ELO (Peak)", value=f"{elo}  ({peak})", inline=True)
-        embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
-        embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
-        embed.add_field(name="Avg OBJ", value=str(avg_obj), inline=True)
-        embed.add_field(name="Avg CKL Rating", value=f"{avg_rating} / 10", inline=True)
-        embed.add_field(name="Region", value=(region or "Not set"), inline=True)
-        kd_flags, obj_flags = p.get("low_kd_flags", 0), p.get("low_obj_flags", 0)
-        if kd_flags or obj_flags:
-            embed.add_field(name="Flags", value=f"Low K/D: {kd_flags} | Low OBJ: {obj_flags}", inline=False)
-        return embed, None
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="ELO (Peak)", value=f"{elo}  ({peak})", inline=True)
+    embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
+    embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
+    embed.add_field(name="Avg OBJ", value=str(avg_obj), inline=True)
+    embed.add_field(name="Avg CKL Rating", value=f"{avg_rating} / 10", inline=True)
+    embed.add_field(name="Region", value=(region or "Not set"), inline=True)
+    kd_flags, obj_flags = p.get("low_kd_flags", 0), p.get("low_obj_flags", 0)
+    if kd_flags or obj_flags:
+        embed.add_field(name="Flags", value=f"Low K/D: {kd_flags} | Low OBJ: {obj_flags}", inline=False)
 
     points = _rank_points(p, stat_key)
     bg = get_background_bytes(guild.id, member.id)
@@ -665,11 +660,11 @@ def build_rank_card(guild: discord.Guild, member: discord.Member, stat_key: str)
 
 
 class _RankStatButton(discord.ui.Button):
-    def __init__(self, stat_key: str, active: bool, row: int):
+    def __init__(self, stat_key: str, active: bool):
         super().__init__(
             label=RANK_STAT_LABELS[stat_key],
             style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
-            row=row,
+            row=0,
         )
         self.stat_key = stat_key
 
@@ -684,8 +679,7 @@ class _RankStatButton(discord.ui.Button):
                 return
         embed, file = build_rank_card(interaction.guild, member, self.stat_key)
         await interaction.response.edit_message(
-            embed=embed, attachments=([file] if file else []),
-            view=RankView(view.target_id, self.stat_key),
+            embed=embed, attachments=[file], view=RankView(view.target_id, self.stat_key)
         )
 
 
@@ -694,9 +688,9 @@ class RankView(GuildView):
         super().__init__(timeout=300)
         self.target_id = target_id
         self.stat = stat if stat in RANK_STAT_ORDER else "elo"
-        # Six buttons across two balanced rows of three.
-        for i, key in enumerate(RANK_STAT_ORDER):
-            self.add_item(_RankStatButton(key, active=(key == self.stat), row=i // 3))
+        # Five buttons -> a single row.
+        for key in RANK_STAT_ORDER:
+            self.add_item(_RankStatButton(key, active=(key == self.stat)))
 
 
 @bot.tree.command(name="rank", description="Show a player's PUG rank card.")
