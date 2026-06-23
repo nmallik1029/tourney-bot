@@ -43,7 +43,8 @@ _ENV_SEED = {
 }
 
 # Every field a guild config can hold (role + category ids). Missing -> 0 (unset).
-_FIELDS = list(_ENV_SEED) + ["tournament_category_id", "admin_category_id"]
+# pug_viewer_role_id has no env seed -- it's set per-guild via /config-pug-roles.
+_FIELDS = list(_ENV_SEED) + ["pug_viewer_role_id", "tournament_category_id", "admin_category_id"]
 
 
 def _default_block() -> dict:
@@ -185,6 +186,10 @@ def pug_captain_role_id(guild_id: int | None = None) -> int:
 
 def pug_spectator_role_id(guild_id: int | None = None) -> int:
     return get_id("pug_spectator_role_id", guild_id)
+
+
+def pug_viewer_role_id(guild_id: int | None = None) -> int:
+    return get_id("pug_viewer_role_id", guild_id)
 
 
 def tournament_category_id(guild_id: int | None = None) -> int:

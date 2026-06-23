@@ -79,6 +79,13 @@ def member_is_pug_admin(member: discord.Member) -> bool:
     return bool(rid) and any(r.id == rid for r in member.roles)
 
 
+def member_is_viewer(member: discord.Member) -> bool:
+    """True if the member holds this guild's 'viewer' role (viewers can't queue)."""
+    from core.guild_config import pug_viewer_role_id
+    rid = pug_viewer_role_id(member.guild.id)
+    return bool(rid) and any(r.id == rid for r in member.roles)
+
+
 def member_is_pug_staff(member: discord.Member) -> bool:
     """Admin OR helper, used for everything except the two setup commands."""
     if member_is_pug_admin(member):

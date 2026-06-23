@@ -74,6 +74,7 @@ async def config_roles(
     eu_role="Auto-assigned to EU-linked players",
     captain_role="Captain-priority role (preferred as captains)",
     spectator_role="Spectator/caster role (VC + channel access on matches)",
+    viewer_role="Viewer role -- members with it cannot join the queue",
 )
 async def config_pug_roles(
     interaction: discord.Interaction,
@@ -83,6 +84,7 @@ async def config_pug_roles(
     eu_role: discord.Role = None,
     captain_role: discord.Role = None,
     spectator_role: discord.Role = None,
+    viewer_role: discord.Role = None,
 ):
     gid = interaction.guild.id
     mapping = [
@@ -92,6 +94,7 @@ async def config_pug_roles(
         ("pug_eu_role_id", eu_role, "EU"),
         ("pug_captain_role_id", captain_role, "Captain"),
         ("pug_spectator_role_id", spectator_role, "Spectator"),
+        ("pug_viewer_role_id", viewer_role, "Viewer"),
     ]
     changed = []
     updates = []
@@ -181,7 +184,8 @@ async def config_show(interaction: discord.Interaction):
             f"Helper: {rola(c.get('pug_helper_role_id'))}\n"
             f"NA: {rola(c.get('pug_na_role_id'))} | EU: {rola(c.get('pug_eu_role_id'))}\n"
             f"Captain: {rola(c.get('pug_captain_role_id'))}\n"
-            f"Spectator: {rola(c.get('pug_spectator_role_id'))}"
+            f"Spectator: {rola(c.get('pug_spectator_role_id'))}\n"
+            f"Viewer (blocked from queue): {rola(c.get('pug_viewer_role_id'))}"
         ),
         inline=False,
     )

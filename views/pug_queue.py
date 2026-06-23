@@ -65,6 +65,13 @@ class QueueView(GuildView):
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = interaction.user.id
 
+        from pug.config import member_is_viewer
+        if member_is_viewer(interaction.user):
+            await interaction.response.send_message(
+                "Viewers can't join the queue.", ephemeral=True
+            )
+            return
+
         if is_noadded(uid):
             info = get_noadd_info(uid) or {}
             until = info.get("until")
