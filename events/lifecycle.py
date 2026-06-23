@@ -19,6 +19,10 @@ async def _bind_guild_for_command(interaction: discord.Interaction) -> bool:
 # Replace the tree's default (always-True) check so guild context is set globally.
 bot.tree.interaction_check = _bind_guild_for_command
 
+# on_ready fires on every gateway reconnect; syncing the command tree is rate-limited
+# hard by Discord, so we sync only once per process.
+_commands_synced = False
+
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error):
@@ -52,12 +56,19 @@ async def on_ready():
 
         # Commands are defined globally; copy them into each authorized guild and sync
         # per-guild (instant propagation). Add a server to GUILD_IDS to authorize it.
+        # Only sync once per process -- re-syncing on every reconnect hammers a heavily
+        # rate-limited endpoint and contributes to 1015 bans.
+        global _commands_synced
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-        for gid in GUILD_IDS:
-            guild = discord.Object(id=gid)
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"Synced {len(synced)} commands to guild {gid}.")
+        if not _commands_synced:
+            for gid in GUILD_IDS:
+                guild = discord.Object(id=gid)
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                print(f"Synced {len(synced)} commands to guild {gid}.")
+            _commands_synced = True
+        else:
+            print("Commands already synced this session; skipping re-sync on reconnect.")
     except Exception as e:
         import traceback
         traceback.print_exc()

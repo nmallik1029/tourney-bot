@@ -5,6 +5,7 @@ from discord import app_commands
 
 from core.bot_instance import bot
 from core.config import guild_object
+from core.guild_views import GuildView
 from pug.config import (
     is_pug_admin,
     is_pug_staff,
@@ -600,46 +601,135 @@ async def remove(interaction: discord.Interaction, user: discord.Member):
     )
 
 
+# ── /rank: all-stats embed + a per-stat trend graph you switch with buttons ──────
+RANK_STAT_ORDER = ["elo", "kd", "rating", "obj", "wr"]
+RANK_STAT_LABELS = {"elo": "ELO", "kd": "K/D", "rating": "CKL Rating", "obj": "Avg OBJ", "wr": "Win Rate"}
+
+
+def build_rank_card(guild: discord.Guild, member: discord.Member, stat_key: str):
+    """Build the (embed, file) for a player's rank card with the chosen stat graphed."""
+    from pug.graph import draw_stat_graph
+    from pug.storage import get_stat_series
+    from pug.backgrounds import get_background_bytes
+
+    p = get_player(member.id)
+    username = primary_username(member.id, member.display_name)
+    region = (p.get("region") or "").upper()
+    region_tag = f" [{region}]" if region else ""
+    elo = p.get("elo", ELO_START)
+    wins, losses = p.get("wins", 0), p.get("losses", 0)
+    kills, deaths = p.get("kills", 0), p.get("deaths", 0)
+    games = p.get("games", 0)
+    kd_str = f"{kills / deaths:.2f}" if deaths else f"{float(kills):.0f}"
+    avg_obj = round(p.get("obj", 0) / games) if games else 0
+    rgames = p.get("rating_games", 0)
+    avg_rating = round(p.get("rating_sum", 0.0) / rgames, 2) if rgames else 0.0
+    peak = max(p.get("peak_elo", elo), elo, *(p.get("elo_history") or [elo]))
+
+    embed = discord.Embed(title=f"Ranked Data for {username}{region_tag}", color=0x5865F2)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="ELO (Peak)", value=f"{elo}  ({peak})", inline=True)
+    embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
+    embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
+    embed.add_field(name="Avg OBJ", value=str(avg_obj), inline=True)
+    embed.add_field(name="Avg CKL Rating", value=f"{avg_rating} / 10", inline=True)
+    embed.add_field(name="Region", value=(region or "Not set"), inline=True)
+    kd_flags, obj_flags = p.get("low_kd_flags", 0), p.get("low_obj_flags", 0)
+    if kd_flags or obj_flags:
+        embed.add_field(name="Flags", value=f"Low K/D: {kd_flags} | Low OBJ: {obj_flags}", inline=False)
+
+    series = get_stat_series(member.id, stat_key)
+    bg = get_background_bytes(guild.id, member.id)
+    graph = draw_stat_graph(series, stat_key, bg_bytes=bg, games_total=wins + losses)
+    embed.set_image(url="attachment://rank.png")
+    return embed, discord.File(graph, filename="rank.png")
+
+
+class _RankStatButton(discord.ui.Button):
+    def __init__(self, stat_key: str, active: bool):
+        super().__init__(
+            label=RANK_STAT_LABELS[stat_key],
+            style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
+        )
+        self.stat_key = stat_key
+
+    async def callback(self, interaction: discord.Interaction):
+        view: RankView = self.view
+        member = interaction.guild.get_member(view.target_id)
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(view.target_id)
+            except discord.HTTPException:
+                await interaction.response.send_message("Couldn't find that player anymore.", ephemeral=True)
+                return
+        embed, file = build_rank_card(interaction.guild, member, self.stat_key)
+        await interaction.response.edit_message(
+            embed=embed, attachments=[file], view=RankView(view.target_id, self.stat_key)
+        )
+
+
+class RankView(GuildView):
+    def __init__(self, target_id: int, stat: str = "elo"):
+        super().__init__(timeout=300)
+        self.target_id = target_id
+        self.stat = stat if stat in RANK_STAT_ORDER else "elo"
+        for key in RANK_STAT_ORDER:
+            self.add_item(_RankStatButton(key, active=(key == self.stat)))
+
+
 @bot.tree.command(name="rank", description="Show a player's PUG rank card.")
 @app_commands.describe(user="The player to look up (defaults to you)")
 async def rank(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.response.defer()
     target = user or interaction.user
-    p = get_player(target.id)
+    embed, file = build_rank_card(interaction.guild, target, "elo")
+    await interaction.followup.send(embed=embed, file=file, view=RankView(target.id, "elo"))
 
-    username = primary_username(target.id, target.display_name)
-    region = p.get("region") or "Not set"
-    elo = p.get("elo", ELO_START)
-    wins, losses = p.get("wins", 0), p.get("losses", 0)
-    kills, deaths, obj = p.get("kills", 0), p.get("deaths", 0), p.get("obj", 0)
-    games = p.get("games", 0)
 
-    kd = (kills / deaths) if deaths else float(kills)
-    kd_str = f"{kd:.2f}" if deaths else f"{kd:.0f}"
-    avg_obj = round(obj / games) if games else 0
-    peak = max(p.get("peak_elo", elo), elo, *(p.get("elo_history") or [elo]))
+@bot.tree.command(
+    name="rank-customize",
+    description="Set a custom background image for your rank card (linked players only).",
+)
+@app_commands.describe(pic="An image to use as your rank card background")
+async def rank_customize(interaction: discord.Interaction, pic: discord.Attachment):
+    if not get_player(interaction.user.id)["usernames"]:
+        await interaction.response.send_message(
+            "You need a linked Krunker account before customizing your rank card.", ephemeral=True
+        )
+        return
+    if not (pic.content_type or "").startswith("image/"):
+        await interaction.response.send_message("That file isn't an image.", ephemeral=True)
+        return
+    if pic.size and pic.size > 12 * 1024 * 1024:
+        await interaction.response.send_message("That image is too large (max 12 MB).", ephemeral=True)
+        return
 
-    embed = discord.Embed(title=f"Ranked Data for {username}", color=0x5865F2)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="Account", value=username, inline=True)
-    embed.add_field(name="Region", value=region, inline=True)
-    embed.add_field(name="ELO (PEAK)", value=f"{elo}  ({peak})", inline=True)
-    embed.add_field(name="Record", value=f"{wins}W / {losses}L", inline=True)
-    embed.add_field(name="K/D", value=f"{kd_str}  ({kills}/{deaths})", inline=True)
-    embed.add_field(name="Avg. OBJ", value=str(avg_obj), inline=True)
-    rgames = p.get("rating_games", 0)
-    avg_rating = round(p.get("rating_sum", 0.0) / rgames, 2) if rgames else 0.0
-    embed.add_field(name="Avg. CKL Rating", value=f"{avg_rating} / 10", inline=True)
+    await interaction.response.defer(ephemeral=True)
+    from pug.backgrounds import set_background
+    try:
+        data = await pic.read()
+        set_background(interaction.guild.id, interaction.user.id, data)
+    except Exception as e:
+        await interaction.followup.send(f"Couldn't set that background: {e}", ephemeral=True)
+        return
+    embed, file = build_rank_card(interaction.guild, interaction.user, "elo")
+    await interaction.followup.send("Rank background updated -- preview:", embed=embed, file=file, ephemeral=True)
 
-    kd_flags = p.get("low_kd_flags", 0)
-    obj_flags = p.get("low_obj_flags", 0)
-    if kd_flags or obj_flags:
-        embed.add_field(name="Flags", value=f"Low K/D: {kd_flags} | Low OBJ: {obj_flags}", inline=False)
 
-    from pug.graph import draw_elo_graph
-    graph = draw_elo_graph(p.get("elo_history", []), start_elo=ELO_START)
-    embed.set_image(url="attachment://elo.png")
-    await interaction.followup.send(embed=embed, file=discord.File(graph, filename="elo.png"))
+@bot.tree.command(
+    name="rank-customize-reset",
+    description="Reset a player's rank card background (staff).",
+)
+@is_pug_admin()
+@app_commands.describe(user="The player whose background to clear")
+async def rank_customize_reset(interaction: discord.Interaction, user: discord.Member):
+    from pug.backgrounds import clear_background
+    cleared = clear_background(interaction.guild.id, user.id)
+    msg = (f"Cleared {user.mention}'s rank background." if cleared
+           else f"{user.mention} had no custom background set.")
+    await interaction.response.send_message(
+        msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+    )
 
 
 @bot.tree.command(name="flag", description="Manually flag a player for low K/D or OBJ (staff only).")

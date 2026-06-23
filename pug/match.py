@@ -27,6 +27,8 @@ from pug.storage import (
     username_to_discord,
     next_queue_number,
     record_match_stats,
+    record_stat_snapshot,
+    save_pug_data,
     add_flag,
     in_active_match,
 )
@@ -1155,6 +1157,7 @@ async def _detect_and_post_flags(bot, players, winner_krunker, loser_krunker, wi
                     file=discord.File(_board(name, "kd"), filename="flag.png"),
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
+                await asyncio.sleep(1.0)  # space out flag uploads so a game can't burst-post
             except discord.HTTPException as e:
                 print(f"[Pug] failed to post kd flag: {e}")
 
@@ -1177,6 +1180,7 @@ async def _detect_and_post_flags(bot, players, winner_krunker, loser_krunker, wi
                     file=discord.File(_board(name, "obj"), filename="flag.png"),
                     allowed_mentions=discord.AllowedMentions(users=True),
                 )
+                await asyncio.sleep(1.0)  # space out flag uploads so a game can't burst-post
             except discord.HTTPException as e:
                 print(f"[Pug] failed to post obj flag: {e}")
 
@@ -1249,6 +1253,14 @@ async def try_handle_pug_match_end(payload: dict) -> bool:
 async def _finalize_pug_match_end(match, payload, teams, players, winner_team_num, map_name):
     """Record stats, post results/flags, and tear down -- runs inside the match's guild
     context (set by the caller)."""
+    # Dedupe: if two match_end webhooks for the same game arrive close together, only the
+    # first finalizes. Set synchronously (no await before it) so concurrent calls can't
+    # both pass -- otherwise we'd double-award ELO and double-post (burst -> rate limit).
+    if match.get("finalized"):
+        print(f"[Pug] match_end ignored -- {match.get('name')} already finalized.")
+        return
+    match["finalized"] = True
+
     from core.bot_instance import bot
     from pug.elo import apply_match
 
@@ -1302,6 +1314,14 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
                                 p.get("objective_score", 0), p.get("damage_done", 0), match_rounds)
 
     deltas = apply_match(winner_ids, loser_ids, player_stats)
+
+    # Record a per-game snapshot (career values + timestamp) for every linked player, now
+    # that ELO + stats are updated, so the /rank trend card has a fresh data point.
+    for p in players:
+        did = username_to_discord(p.get("name", ""))
+        if did is not None:
+            record_stat_snapshot(did)
+    save_pug_data()
 
     # Build scoreboard image
     image_file = None

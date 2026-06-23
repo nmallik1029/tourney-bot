@@ -405,7 +405,56 @@ def get_player(discord_id: int) -> dict:
     player.setdefault("peak_elo", player.get("elo", ELO_START))
     player.setdefault("low_kd_flags", 0)
     player.setdefault("low_obj_flags", 0)
+    # Per-game snapshots for the /rank trend card: one entry per game with a timestamp
+    # and the player's career values at that point. Empty for players who haven't played
+    # since this was added (the card shows "not enough data" until they have >=2 points).
+    player.setdefault("stat_history", [])  # [{ts, elo, kd, rating, obj, wr}, ...]
     return player
+
+
+# Stats the /rank card can graph: key -> (label, decimals, is_percent).
+RANK_STATS = {
+    "elo":    ("ELO", 0, False),
+    "kd":     ("K/D", 2, False),
+    "rating": ("CKL Rating", 2, False),
+    "obj":    ("Avg OBJ", 0, False),
+    "wr":     ("Win Rate", 0, True),
+}
+
+STAT_HISTORY_CAP = 750  # plenty of games; keeps the persisted blob bounded
+
+
+def record_stat_snapshot(discord_id: int):
+    """Append a per-game snapshot of the player's CAREER values (called once per player
+    after their stats + ELO are updated for a finished game). Does NOT save -- the caller
+    batches the save. No-op for fake simulation players."""
+    if discord_id in sim_players:
+        return
+    p = get_player(discord_id)
+    deaths = p.get("deaths", 0)
+    kills = p.get("kills", 0)
+    games = p.get("games", 0)
+    rgames = p.get("rating_games", 0)
+    wins, losses = p.get("wins", 0), p.get("losses", 0)
+    decided = wins + losses
+    snap = {
+        "ts": time.time(),
+        "elo": p.get("elo", ELO_START),
+        "kd": round((kills / deaths) if deaths else float(kills), 4),
+        "rating": round((p.get("rating_sum", 0.0) / rgames) if rgames else 0.0, 4),
+        "obj": round((p.get("obj", 0) / games) if games else 0.0, 2),
+        "wr": round((wins / decided) if decided else 0.0, 4),
+    }
+    hist = p.setdefault("stat_history", [])
+    hist.append(snap)
+    if len(hist) > STAT_HISTORY_CAP:
+        del hist[:-STAT_HISTORY_CAP]
+
+
+def get_stat_series(discord_id: int, stat_key: str) -> list[tuple[float, float]]:
+    """Return [(timestamp, value), ...] for one stat from a player's snapshot history."""
+    p = get_player(discord_id)
+    return [(s.get("ts", 0.0), s.get(stat_key, 0.0)) for s in p.get("stat_history", [])]
 
 
 def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2):

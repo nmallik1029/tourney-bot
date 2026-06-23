@@ -63,7 +63,23 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
         payload = await request.json()
     except Exception:
         return web.Response(status=400, text="Invalid JSON")
+    # Ack within milliseconds and do everything heavy in the background. If we blocked
+    # here on slow Discord posts, the Krunker poster would time out and re-send the same
+    # result, multiplying the load -- which is how the bot got rate-limit-banned (1015).
+    asyncio.create_task(_process_webhook_safe(payload))
+    return web.Response(status=200, text="ok")
 
+
+async def _process_webhook_safe(payload: dict):
+    try:
+        await _process_webhook(payload)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Webhook] background processing error: {e}")
+
+
+async def _process_webhook(payload: dict):
     # Optional debug dump to a #test-raw-data channel. Fired as a BACKGROUND task so it
     # NEVER delays result handling. Sending the (often huge) payload in chunks hits
     # Discord's rate limit and can take minutes, so it must not be awaited inline.
@@ -75,6 +91,9 @@ async def handle_krunker_webhook(request: web.Request) -> web.Response:
                 if ch:
                     for i in range(0, len(raw_json), 1900):
                         await ch.send(f"```json\n{raw_json[i:i+1900]}\n```")
+                        # Space the chunks out so a big payload can't burst Discord's
+                        # rate limit (this is a debug-only channel; latency doesn't matter).
+                        await asyncio.sleep(1.0)
         except Exception as e:
             print(f"[Webhook] raw-data dump failed (non-fatal): {e}")
 
