@@ -1,7 +1,7 @@
 import re
 import discord
 from core.bot_instance import bot
-from core.config import CASTER_ROLE_ID
+from core.config import CASTER_ROLE_ID, SET_REGION, SET_REGION_NAME
 from core.storage import tournaments, active_matches
 from views.pickban import PickBanView
 
@@ -102,17 +102,17 @@ async def on_message(message: discord.Message):
                 )
                 return
 
-            # Host captain posted a link -- check it's DAL region
+            # Host captain posted a link -- check it's on the configured server region.
             link = krunker_link.group(0)
             game_code = re.search(r"\?game=(\w+):", link)
-            if game_code and game_code.group(1) != "DAL":
+            if game_code and game_code.group(1).upper() != SET_REGION:
                 await message.delete()
                 embed = discord.Embed(
                     title="Wrong Region",
                     description=(
-                        "Your game is not on **DALLAS** servers.\n\n"
+                        f"Your game is not on **{SET_REGION_NAME.upper()}** servers.\n\n"
                         "**Fix it:**\n"
-                        "1. Set your default region to **DALLAS** in Krunker settings\n"
+                        f"1. Set your default region to **{SET_REGION_NAME.upper()}** in Krunker settings\n"
                         "2. Click the **Host** button again\n\n"
                         "Still stuck? Ask <@723538323636748359>"
                     ),

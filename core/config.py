@@ -24,6 +24,26 @@ GUILD_IDS = _parse_guild_ids()
 RAILWAY_BASE = "https://tourney-bot-production.up.railway.app"
 WEBHOOK_PORT = 5000
 
+SET_REGION = os.environ.get("SET_REGION", "DAL").strip().upper() or "DAL"
+REGION_NAMES = {
+    "AFR": "Africa",
+    "BHN": "Bahrain",
+    "BRZ": "Brazil",
+    "DAL": "Dallas",
+    "FRA": "Frankfurt",
+    "HKG": "Hong Kong",
+    "IND": "India",
+    "JPN": "Japan",
+    "LON": "London",
+    "MIA": "Miami",
+    "NY": "New York",
+    "SIN": "Singapore",
+    "SV": "Silicon Valley",
+    "SYD": "Sydney",
+    "TKY": "Tokyo",
+}
+SET_REGION_NAME = os.environ.get("SET_REGION_NAME", "").strip() or REGION_NAMES.get(SET_REGION, SET_REGION)
+
 MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
 
 

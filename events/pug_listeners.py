@@ -3,6 +3,7 @@ import re
 import discord
 
 from core.bot_instance import bot
+from core.config import SET_REGION, SET_REGION_NAME
 from core.guild_ctx import set_guild, guild_context
 from pug.storage import pug_matches, pug_data, all_guild_ids
 from pug.match import get_match_for_channel, mark_checked_in, cleanup_orphaned_channels, reset_queue_on_start
@@ -83,10 +84,10 @@ async def pug_krunker_link(message: discord.Message):
         return
 
     link = krunker_link.group(0)
-    want_code = match.get("region_code", "DAL")
-    want_name = match.get("region_name", "Dallas").upper()
+    want_code = match.get("region_code", SET_REGION).upper()
+    want_name = match.get("region_name", SET_REGION_NAME).upper()
     game_code = re.search(r"\?game=(\w+):", link)
-    if game_code and game_code.group(1) != want_code:
+    if game_code and game_code.group(1).upper() != want_code:
         await message.delete()
         await message.channel.send(
             embed=discord.Embed(

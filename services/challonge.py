@@ -100,11 +100,40 @@ async def _request(method: str, path: str, *, body: dict | None = None, params: 
                 raise Exception(f"Non-JSON response: {text[:200]}")
 
 
+def _relationship_id(item: dict, *names: str) -> str | None:
+    rels = item.get("relationships", {}) or {}
+    for name in names:
+        data = (rels.get(name) or {}).get("data")
+        if isinstance(data, dict) and data.get("id") is not None:
+            return str(data["id"])
+    return None
+
+
 def _flatten(item: dict) -> dict:
     """JSON:API resource ({id, type, attributes}) -> flat dict (attributes + string id),
     matching the old v1 shape. Id-bearing fields are stringified for consistent compares."""
     attrs = dict(item.get("attributes", {}))
     out = {**attrs, "id": str(item.get("id"))}
+    aliases = {
+        "player1Id": "player1_id",
+        "player2Id": "player2_id",
+        "winnerId": "winner_id",
+        "loserId": "loser_id",
+    }
+    for source, target in aliases.items():
+        if source in out and target not in out:
+            out[target] = out[source]
+    rel_aliases = {
+        "player1_id": ("player1", "player_1", "participant1", "participant_1"),
+        "player2_id": ("player2", "player_2", "participant2", "participant_2"),
+        "winner_id": ("winner",),
+        "loser_id": ("loser",),
+    }
+    for target, names in rel_aliases.items():
+        if out.get(target) is None:
+            rid = _relationship_id(item, *names)
+            if rid is not None:
+                out[target] = rid
     for k in ("player1_id", "player2_id", "winner_id", "loser_id"):
         if out.get(k) is not None:
             out[k] = str(out[k])

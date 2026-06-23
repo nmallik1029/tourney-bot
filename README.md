@@ -189,7 +189,7 @@ The **upper-seeded team** always hosts. The host captain clicks **Host Map 1** w
 - Posts a visible status message
 
 ### Joining (Step 3/3)
-The host pastes the Krunker lobby link in the matchroom (region must be NY). The bot auto-detects it and:
+The host pastes the Krunker lobby link in the matchroom (region must match `SET_REGION`). The bot auto-detects it and:
 - Posts a **Step 3/3 | Join the Game** embed with the link
 - Captains/players follow the link and join their team (Alpha / Beta)
 
@@ -367,7 +367,7 @@ All three are env vars (fall back to `0` / `CKL` in `pug/config.py` if unset).
 3. **Captains**, the two highest-ELO players (random tiebreak).
 4. **Snake draft**, order `C1, C2, C2, C1, C1, C2`; each pick has a 30-second timer. If the captain does not pick in time, the highest-ELO available player is auto-picked. The last player is auto-assigned. The embed lists remaining players highest-ELO first.
 5. **Map vote**, a 15-second vote where every player gets one vote (click a map, click again to unvote). Most votes wins (ties random, no votes = random map).
-6. **Host**, bot creates Team 1 / Team 2 voice channels and moves players in. The higher-ELO captain clicks **Host Match** (Glorp / CrankShaft), which auto-fills both teams from linked usernames, then pastes the Krunker link (NY region) back in the channel.
+6. **Host**, bot creates Team 1 / Team 2 voice channels and moves players in. The higher-ELO captain clicks **Host Match** (Glorp / CrankShaft), which auto-fills both teams from linked usernames, then pastes the Krunker link (`SET_REGION`) back in the channel.
 7. **Result**, the Krunker `match_end` webhook is matched to the PUG by **player identity** (linked usernames; falls back to captain/team names), ELO is updated (opponent-scaled, start 1000), and a result + scoreboard is posted to `#results`. An announce embed is posted in the match channel, then channels are cleaned up after 10s.
 
 ### Troubleshooting: result didn't post
@@ -376,12 +376,9 @@ If a finished game doesn't post to `#results`, check the bot console logs for `[
 - **`no PUG match found`** → the players in the payload aren't linked (`/link` them) **or** the match wasn't in the host stage. The log prints the reported team names and the active matches' captains so you can compare.
 
 ### Regions & host server
-Every `/link` sets a player **region** (`NA/EU/ASIA/OCE/ME`). The host server is chosen from lobby composition so EU isn't always stuck on a US server:
-- **6+ EU and ≤2 NA** → Frankfurt (`FRA`)
-- **3+ EU and ≤5 NA** → New York (`NY`)
-- otherwise → **Dallas (`DAL`)** (default)
+Every `/link` sets a player **region** (`NA/EU/ASIA/OCE/ME`) for player profile/role purposes. Hosted tournament and PUG lobbies use the deployment-configured `SET_REGION` value, defaulting to `DAL`.
 
-The chosen region is baked into the host link and enforced when the host pastes the Krunker lobby link.
+`SET_REGION` is baked into the host link and enforced when the host pastes the Krunker lobby link.
 
 ### Commands
 "Staff" = admin **or** helper role.

@@ -3,7 +3,7 @@ import uuid
 import urllib.parse
 import discord
 from core.bot_instance import bot
-from core.config import MAPS, RAILWAY_BASE, SERVER_ID, ROLE_ID
+from core.config import MAPS, RAILWAY_BASE, SERVER_ID, ROLE_ID, SET_REGION, SET_REGION_NAME
 from core.storage import tournaments, active_matches
 
 MAP_IDS = {
@@ -289,7 +289,7 @@ class HostMapButton(discord.ui.Button):
             "team1Name": team1,
             "team2Name": team2,
             "teamSize": team_size,
-            "region": "dal",
+            "region": SET_REGION.lower(),
             "webhook": WEBHOOK_URL,
         }
         query = urllib.parse.urlencode(params)
@@ -302,7 +302,7 @@ class HostMapButton(discord.ui.Button):
             f"1. Click a button below to open your client\n"
             f"2. The game will auto-create\n"
             f"3. Paste the Krunker link back in this channel\n\n"
-            f"Make sure your region is set to **New York**.",
+            f"Make sure your region is set to **{SET_REGION_NAME}**.",
             view=view,
             ephemeral=True,
         )

@@ -470,6 +470,8 @@ async def handle_api_tournament(request: web.Request) -> web.Response:
 
     match_list = []
     for m in matches:
+        if not m.get("player1_id") and not m.get("player2_id"):
+            print(f"[Challonge] Match has no participant ids after flattening: {m}")
         player1 = p_map.get(str(m.get("player1_id")), None)
         player2 = p_map.get(str(m.get("player2_id")), None)
         if two_team_fallback and not player1 and not player2:

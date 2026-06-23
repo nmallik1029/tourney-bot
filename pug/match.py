@@ -7,7 +7,7 @@ import urllib.parse
 
 import discord
 
-from core.config import MAPS, RAILWAY_BASE
+from core.config import MAPS, RAILWAY_BASE, SET_REGION, SET_REGION_NAME
 from core.guild_ctx import guild_context
 from views.pickban import HostClientView, WEBHOOK_URL, MAP_IDS
 from pug.config import (
@@ -23,7 +23,6 @@ from pug.storage import (
     pug_matches,
     sim_players,
     get_elo,
-    get_player,
     primary_username,
     username_to_discord,
     next_queue_number,
@@ -833,7 +832,7 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
         "teamSize": f"{max(n1, n2)}v{max(n1, n2)}",
         "team1Players": ", ".join(_team_usernames(match, cap1, guild)),
         "team2Players": ", ".join(_team_usernames(match, cap2, guild)),
-        "region": match.get("region_code", "DAL").lower(),
+        "region": match.get("region_code", SET_REGION).lower(),
         "webhook": WEBHOOK_URL,
     }
     query = urllib.parse.urlencode(params)
@@ -841,15 +840,8 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
 
 
 def compute_host_region(match: dict) -> tuple[str, str]:
-    """Pick the host server from lobby composition. Default Dallas; EU-heavy lobbies
-    shift to New York, very EU-heavy to Frankfurt, so EU doesn't always get screwed."""
-    na = sum(1 for p in match.get("players", []) if get_player(p).get("region", "").upper() == "NA")
-    eu = sum(1 for p in match.get("players", []) if get_player(p).get("region", "").upper() == "EU")
-    if eu >= 6 and na <= 2:
-        return "FRA", "Frankfurt"
-    if eu >= 3 and na <= 5:
-        return "NY", "New York"
-    return "DAL", "Dallas"
+    """Use the deployment-configured Krunker host server for every match."""
+    return SET_REGION, SET_REGION_NAME
 
 
 async def post_host(match: dict, bot):
@@ -909,7 +901,7 @@ def build_host_embed(match: dict) -> discord.Embed:
 
     t1 = ", ".join(dn(p) for p in match["teams"][cap1])
     t2 = ", ".join(dn(p) for p in match["teams"][cap2])
-    region_name = match.get("region_name", "Dallas")
+    region_name = match.get("region_name", SET_REGION_NAME)
     embed = discord.Embed(
         title="Click to Host",
         description=(
@@ -1292,15 +1284,24 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
     loser_ids = match["teams"][loser_cap]
 
     # Record per-game kills/deaths/obj for every linked player BEFORE apply_match, so
-    # the stats are persisted in the same save as the ELO update.
+    # the stats are persisted in the same save as the ELO update. Keep the same stat
+    # packet for Elo performance modifiers.
     match_rounds = int(winner_krunker.get("score", 0)) + int(loser_krunker.get("score", 0))
+    player_stats: dict[int, dict] = {}
     for p in players:
         did = username_to_discord(p.get("name", ""))
         if did is not None:
+            player_stats[did] = {
+                "kills": p.get("kills", 0),
+                "deaths": p.get("deaths", 0),
+                "obj": p.get("objective_score", 0),
+                "dmg": p.get("damage_done", 0),
+                "rounds": match_rounds,
+            }
             record_match_stats(did, p.get("kills", 0), p.get("deaths", 0),
                                 p.get("objective_score", 0), p.get("damage_done", 0), match_rounds)
 
-    deltas = apply_match(winner_ids, loser_ids)
+    deltas = apply_match(winner_ids, loser_ids, player_stats)
 
     # Build scoreboard image
     image_file = None

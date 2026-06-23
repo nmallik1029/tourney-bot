@@ -1,5 +1,6 @@
 import discord
 
+from core.config import SET_REGION_NAME
 from core.guild_views import GuildView
 from pug.config import member_is_pug_staff
 from pug.storage import pug_matches
@@ -17,7 +18,7 @@ async def send_host_launch(interaction: discord.Interaction, match: dict, *, all
     from pug.match import build_host_url
     glorp_url = build_host_url(match, "glorp", interaction.guild)
     crankshaft_url = build_host_url(match, "crankshaft", interaction.guild)
-    region_name = match.get("region_name", "Dallas")
+    region_name = match.get("region_name", SET_REGION_NAME)
 
     from views.pickban import HostClientView
     view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url)

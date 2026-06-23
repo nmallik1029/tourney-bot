@@ -131,6 +131,8 @@ GITHUB_GIST_TOKEN
 GITHUB_GIST_ID
 CHALLONGE_CLIENT_ID
 CHALLONGE_CLIENT_SECRET
+SET_REGION
+SET_REGION_NAME
 ```
 
 Use one Gist for all servers. The bot stores multi-server data inside that Gist:
@@ -140,6 +142,22 @@ Use one Gist for all servers. The bot stores multi-server data inside that Gist:
 - `config.json`
 
 Use `GUILD_IDS` to control which servers receive slash commands.
+
+Use `SET_REGION` to control which Krunker server every hosted match must use.
+
+Example:
+
+```text
+SET_REGION=DAL
+```
+
+`SET_REGION_NAME` is optional display text for Discord messages. If unset, the bot uses a built-in name for common region codes.
+
+Example:
+
+```text
+SET_REGION_NAME=Dallas
+```
 
 For Challonge, you can use either:
 
