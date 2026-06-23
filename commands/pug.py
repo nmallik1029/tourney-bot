@@ -39,6 +39,8 @@ from pug.storage import (
     add_flag,
     remove_flag,
     reset_rating,
+    reset_cached_stats,
+    reset_cached_stats_all,
 )
 from views.pug_queue import (
     QueueView,
@@ -469,6 +471,72 @@ async def pug_reset_rating(interaction: discord.Interaction, user: discord.Membe
         f"ELO, W/L, K/D, and OBJ are unchanged.",
         ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
     )
+
+
+@bot.tree.command(
+    name="pug-reset-stats",
+    description="Fully reset cached PUG stats for one player, or everyone if no user is given.",
+)
+@is_pug_staff()
+@app_commands.describe(user="Player to reset (leave blank to reset EVERYONE)")
+async def pug_reset_stats(interaction: discord.Interaction, user: discord.Member = None):
+    if user:
+        reset_cached_stats(user.id)
+        await interaction.response.send_message(
+            f"Fully reset cached PUG stats for {user.mention}: ELO/W-L, K/D, OBJ/DMG, "
+            f"CKL rating, trend history, peak ELO, and low-stat flags.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        try:
+            from views.pug_queue import refresh_bigboard
+            await refresh_bigboard(interaction.client)
+        except Exception as e:
+            print(f"[Pug] bigboard refresh failed after stat reset: {e}")
+        return
+
+    count = len(pug_data["players"])
+    await interaction.response.send_message(
+        f"Warning: this will fully reset cached PUG stats for **all {count} players**: "
+        f"ELO/W-L, K/D, OBJ/DMG, CKL rating, trend history, peak ELO, and low-stat flags. "
+        f"Linked accounts, regions, bans, no-adds, and mod logs are preserved. This cannot be undone.",
+        view=ConfirmFullStatsResetView(interaction.user.id),
+        ephemeral=True,
+    )
+
+
+class ConfirmFullStatsResetView(discord.ui.View):
+    def __init__(self, author_id: int):
+        super().__init__(timeout=30)
+        self.author_id = author_id
+
+    @discord.ui.button(label="Reset ALL Stats", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This isn't your confirmation.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        count = reset_cached_stats_all()
+        try:
+            from views.pug_queue import refresh_bigboard
+            await refresh_bigboard(interaction.client)
+        except Exception as e:
+            print(f"[Pug] bigboard refresh failed after global stat reset: {e}")
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(
+            content=f"Fully reset cached PUG stats for **{count} players**. Links, regions, and moderation records were preserved.",
+            view=self,
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This isn't your confirmation.", ephemeral=True)
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Cancelled, no changes made.", view=self)
 
 
 # Match control

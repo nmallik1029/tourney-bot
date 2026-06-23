@@ -7,14 +7,14 @@ from core.storage import tournaments, active_matches
 from views.pickban import PickBanView, build_pickban_embed
 
 FAKE_PLAYERS = [
-    {"name": "AraffyWappy",   "score": 6655, "kills": 45, "deaths": 30, "objective_score": 1340, "damage_done": 4183},
-    {"name": "LESHAWN",       "score": 6085, "kills": 37, "deaths": 39, "objective_score": 1340, "damage_done": 4582},
-    {"name": "TravisScottAl", "score": 5920, "kills": 40, "deaths": 41, "objective_score": 1070, "damage_done": 3781},
-    {"name": "rckyyyyyy",     "score": 5805, "kills": 37, "deaths": 30, "objective_score": 1540, "damage_done": 3659},
-    {"name": "VollerPlays",   "score": 5950, "kills": 41, "deaths": 43, "objective_score": 1210, "damage_done": 4694},
-    {"name": "HypeZeus",      "score": 5870, "kills": 41, "deaths": 50, "objective_score": 880,  "damage_done": 4926},
-    {"name": "MemoMINI",      "score": 5745, "kills": 41, "deaths": 47, "objective_score": 910,  "damage_done": 4836},
-    {"name": "ECODOT",        "score": 4890, "kills": 36, "deaths": 53, "objective_score": 920,  "damage_done": 4257},
+    {"name": "AraffyWappy",   "score": 5210, "kills": 48, "deaths": 29, "objective_score": 830, "damage_done": 5100},
+    {"name": "LESHAWN",       "score": 4580, "kills": 40, "deaths": 31, "objective_score": 720, "damage_done": 4200},
+    {"name": "TravisScottAl", "score": 3890, "kills": 34, "deaths": 34, "objective_score": 560, "damage_done": 3500},
+    {"name": "rckyyyyyy",     "score": 3120, "kills": 27, "deaths": 38, "objective_score": 420, "damage_done": 2900},
+    {"name": "VollerPlays",   "score": 4330, "kills": 39, "deaths": 35, "objective_score": 620, "damage_done": 4100},
+    {"name": "HypeZeus",      "score": 3375, "kills": 30, "deaths": 37, "objective_score": 460, "damage_done": 3200},
+    {"name": "MemoMINI",      "score": 2790, "kills": 24, "deaths": 39, "objective_score": 350, "damage_done": 2700},
+    {"name": "ECODOT",        "score": 2110, "kills": 18, "deaths": 42, "objective_score": 230, "damage_done": 2200},
 ]
 
 
@@ -35,8 +35,22 @@ FAKE_PLAYERS = [
 async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_name: str):
     await interaction.response.defer(ephemeral=True)
 
-    team1_players = FAKE_PLAYERS[:team_size]
-    team2_players = FAKE_PLAYERS[4:4 + team_size]
+    fake_changes = [
+        {"delta": 78, "bonus": 24},
+        {"delta": 61, "bonus": 10},
+        {"delta": 50, "bonus": 2},
+        {"delta": 39, "bonus": 0},
+        {"delta": -34, "bonus": 8},
+        {"delta": -52, "bonus": 0},
+        {"delta": -64, "bonus": -4},
+        {"delta": -78, "bonus": -16},
+    ]
+    fake_rows = [
+        {**p, "elo_change": fake_changes[i], "elo_delta": fake_changes[i]["delta"], "elo_bonus": fake_changes[i]["bonus"]}
+        for i, p in enumerate(FAKE_PLAYERS)
+    ]
+    team1_players = fake_rows[:team_size]
+    team2_players = fake_rows[4:4 + team_size]
 
     try:
         from scoreboard import draw_scoreboard, RED, WHITE
@@ -51,6 +65,7 @@ async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_
             team2_score=1,
             team2_players=team2_players,
             team2_color=WHITE,
+            show_elo=True,
         )
         await interaction.channel.send(file=discord.File(img_buf, filename="scoreboard.png"))
         await interaction.followup.send("Test scoreboard posted.", ephemeral=True)

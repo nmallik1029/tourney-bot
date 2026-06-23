@@ -1,10 +1,13 @@
-from pug.config import ELO_K
 from pug.storage import get_player, save_pug_data
 
-ELO_MIN_CHANGE = 3
-ELO_MAX_CHANGE = 35
-ELO_PERFORMANCE_MULTIPLIER = 4.0
-ELO_PERFORMANCE_MAX_ADJUST = 8
+ELO_MIN_WIN_CHANGE = 1
+ELO_MIN_LOSS_CHANGE = 1
+ELO_MAX_CHANGE = 100
+ELO_PERFORMANCE_MAX_ADJUST = 30
+ELO_RATING_EXPECTATION_STEP = 250.0
+ELO_PERFORMANCE_POSITIVE_MULTIPLIER = 12.0
+ELO_PERFORMANCE_NEGATIVE_MULTIPLIER = 8.0
+ELO_PERFORMANCE_NEGATIVE_GRACE = 1.5
 
 
 def expected(rating: float, opp_rating: float) -> float:
@@ -22,23 +25,35 @@ def _clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
 
-def _performance_adjustments(team_ids: list[int], player_stats: dict[int, dict] | None) -> dict[int, int]:
-    """Return bounded per-player Elo adjustments based on same-team CKL rating.
+def _base_result_delta(pid: int, opponent_avg: float, won: bool) -> int:
+    """Per-player result delta from current Elo distribution, before performance."""
+    exp = expected(get_player(pid)["elo"], opponent_avg)
+    if won:
+        return _clamp(round(ELO_MAX_CHANGE * (1.0 - exp)), ELO_MIN_WIN_CHANGE, ELO_MAX_CHANGE)
+    return -_clamp(round(ELO_MAX_CHANGE * exp), ELO_MIN_LOSS_CHANGE, ELO_MAX_CHANGE)
 
-    The team average is the baseline, so the result remains mostly Elo/team based:
-    carries get a little extra, weaker games get a little less, and the modifier is
-    capped so one stat line cannot swamp the match result.
+
+def _performance_adjustments(
+    player_ids: list[int],
+    player_stats: dict[int, dict] | None,
+) -> dict[int, int]:
+    """Return bounded per-player Elo bonuses from CKL rating adjusted for current Elo.
+
+    Higher-Elo players are expected to produce stronger CKL ratings, so a 7.8 from a
+    1500-Elo player earns less bonus than the same line from a lower-rated player in
+    the same lobby. Negative bonuses are intentionally forgiving and mostly reserved
+    for hard-carry stat lines.
     """
-    if not team_ids or not player_stats:
-        return {pid: 0 for pid in team_ids}
+    if not player_ids or not player_stats:
+        return {pid: 0 for pid in player_ids}
 
     from scoreboard import ckl_rating
 
     ratings: dict[int, float] = {}
-    for pid in team_ids:
+    for pid in player_ids:
         stats = player_stats.get(pid)
         if not stats:
-            return {p: 0 for p in team_ids}
+            return {p: 0 for p in player_ids}
 
         ratings[pid] = ckl_rating(
             stats.get("kills", 0),
@@ -48,52 +63,73 @@ def _performance_adjustments(team_ids: list[int], player_stats: dict[int, dict] 
             stats.get("rounds", 2),
         )
 
-    team_rating = sum(ratings.values()) / len(ratings)
-    return {
-        pid: _clamp(
-            round((rating - team_rating) * ELO_PERFORMANCE_MULTIPLIER),
-            -ELO_PERFORMANCE_MAX_ADJUST,
-            ELO_PERFORMANCE_MAX_ADJUST,
-        )
-        for pid, rating in ratings.items()
-    }
+    lobby_rating = sum(ratings.values()) / len(ratings)
+    lobby_elo = sum(get_player(pid)["elo"] for pid in player_ids) / len(player_ids)
+
+    adjustments: dict[int, int] = {}
+    for pid, rating in ratings.items():
+        stats = player_stats.get(pid, {})
+        elo = get_player(pid)["elo"]
+        expected_rating = lobby_rating + ((elo - lobby_elo) / ELO_RATING_EXPECTATION_STEP)
+        over_expected = rating - expected_rating
+
+        if over_expected >= 0:
+            bonus = round(over_expected * ELO_PERFORMANCE_POSITIVE_MULTIPLIER)
+        elif over_expected <= -ELO_PERFORMANCE_NEGATIVE_GRACE:
+            bonus = round((over_expected + ELO_PERFORMANCE_NEGATIVE_GRACE) * ELO_PERFORMANCE_NEGATIVE_MULTIPLIER)
+        else:
+            bonus = 0
+
+        kills = int(stats.get("kills", 0) or 0)
+        deaths = int(stats.get("deaths", 0) or 0)
+        hard_carried = deaths >= max(6, kills * 3) and deaths - kills >= 8
+        if bonus < 0 and not hard_carried:
+            bonus = 0
+
+        adjustments[pid] = _clamp(bonus, -ELO_PERFORMANCE_MAX_ADJUST, ELO_PERFORMANCE_MAX_ADJUST)
+
+    return adjustments
 
 
 def apply_match(
     winner_ids: list[int],
     loser_ids: list[int],
     player_stats: dict[int, dict] | None = None,
-) -> dict[int, int]:
+) -> dict[int, dict]:
     """Update ELO for a finished match.
 
-    Uses team-average expected scores so the delta scales with opponent strength.
+    Uses per-player expected scores against the opposing team's average Elo so the
+    base delta scales from -100 to +100 with the current lobby distribution.
     When scoreboard stats are available, each player also gets a bounded
-    performance modifier from their CKL rating relative to their own team.
-    Also bumps win/loss counts and persists. Returns {discord_id: delta}.
+    performance modifier from their CKL rating relative to lobby rating and their
+    own Elo. Also bumps win/loss counts and persists.
+
+    Returns {discord_id: {"base": int, "bonus": int, "delta": int}}.
     """
-    win_avg = _team_avg(winner_ids)
-    lose_avg = _team_avg(loser_ids)
+    win_opp_avg = _team_avg(loser_ids)
+    lose_opp_avg = _team_avg(winner_ids)
+    all_ids = list(winner_ids) + list(loser_ids)
+    adjustments = _performance_adjustments(all_ids, player_stats)
 
-    exp_win = expected(win_avg, lose_avg)   # expected score of the winning team
-    base_delta = _clamp(round(ELO_K * (1 - exp_win)), ELO_MIN_CHANGE, ELO_MAX_CHANGE)
-    winner_adjustments = _performance_adjustments(winner_ids, player_stats)
-    loser_adjustments = _performance_adjustments(loser_ids, player_stats)
-
-    deltas: dict[int, int] = {}
+    deltas: dict[int, dict] = {}
 
     for pid in winner_ids:
         player = get_player(pid)
-        delta = _clamp(base_delta + winner_adjustments.get(pid, 0), ELO_MIN_CHANGE, ELO_MAX_CHANGE)
+        base = _base_result_delta(pid, win_opp_avg, won=True)
+        bonus = adjustments.get(pid, 0)
+        delta = _clamp(base + bonus, ELO_MIN_WIN_CHANGE, ELO_MAX_CHANGE)
         player["elo"] += delta
         player["wins"] += 1
-        deltas[pid] = delta
+        deltas[pid] = {"base": base, "bonus": bonus, "delta": delta}
 
     for pid in loser_ids:
         player = get_player(pid)
-        loss = _clamp(base_delta - loser_adjustments.get(pid, 0), ELO_MIN_CHANGE, ELO_MAX_CHANGE)
-        player["elo"] = max(0, player["elo"] - loss)
+        base = _base_result_delta(pid, lose_opp_avg, won=False)
+        bonus = adjustments.get(pid, 0)
+        delta = _clamp(base + bonus, -ELO_MAX_CHANGE, -ELO_MIN_LOSS_CHANGE)
+        player["elo"] = max(0, player["elo"] + delta)
         player["losses"] += 1
-        deltas[pid] = -loss
+        deltas[pid] = {"base": base, "bonus": bonus, "delta": delta}
 
     # Record an ELO history point for everyone (for the /rank graph) and update each
     # player's peak ELO. Cap the history so the persisted blob can't grow unbounded.

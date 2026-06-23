@@ -227,7 +227,8 @@ async def force_result(match: dict, winner_team_num: int, bot, admin: discord.Me
     results_ch = bot.get_channel(pug_data["config"].get("results_channel_id"))
     if results_ch:
         def line(pid):
-            d = deltas.get(pid, 0)
+            change = deltas.get(pid, {})
+            d = change.get("delta", 0) if isinstance(change, dict) else int(change or 0)
             sign = "+" if d >= 0 else ""
             return f"<@{pid}> | **{get_elo(pid)}** ({sign}{d})"
         embed = discord.Embed(
@@ -1327,12 +1328,23 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
     image_file = None
     try:
         from scoreboard import draw_scoreboard, RED, WHITE
+        def _with_elo_change(p):
+            row = dict(p)
+            did = username_to_discord(row.get("name", ""))
+            change = deltas.get(did, {}) if did is not None else {}
+            if isinstance(change, dict):
+                row["discord_id"] = did
+                row["elo_change"] = change
+                row["elo_delta"] = change.get("delta", 0)
+                row["elo_bonus"] = change.get("bonus", 0)
+            return row
+
         winner_players = sorted(
-            [p for p in players if p["team"] == winner_team_num],
+            [_with_elo_change(p) for p in players if p["team"] == winner_team_num],
             key=lambda p: p.get("score", 0), reverse=True,
         )
         loser_players = sorted(
-            [p for p in players if p["team"] != winner_team_num],
+            [_with_elo_change(p) for p in players if p["team"] != winner_team_num],
             key=lambda p: p.get("score", 0), reverse=True,
         )
         img_buf = draw_scoreboard(
@@ -1346,6 +1358,7 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
             team2_score=loser_krunker.get("score", 0),
             team2_players=loser_players,
             team2_color=WHITE,
+            show_elo=True,
         )
         image_file = discord.File(img_buf, filename="scoreboard.png")
     except Exception as e:
@@ -1356,13 +1369,20 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
     results_ch = bot.get_channel(pug_data["config"].get("results_channel_id"))
     if results_ch:
         def _elo_line(pid):
-            d = deltas.get(pid, 0)
+            change = deltas.get(pid, {})
+            d = change.get("delta", 0) if isinstance(change, dict) else int(change or 0)
             sign = "+" if d >= 0 else ""
             return f"<@{pid}> | **{get_elo(pid)}** ({sign}{d})"
+
+        # Lobby MVP = highest score across both teams.
+        mvp = max(players, key=lambda p: p.get("score", 0), default=None)
+        mvp_did = username_to_discord(mvp.get("name", "")) if mvp else None
+        mvp_line = f"**MVP:** <@{mvp_did}>\n" if mvp_did else ""
 
         embed = discord.Embed(
             title=f"{match['name'].upper()} | {winner_krunker['name']}'s team wins",
             description=(
+                f"{mvp_line}"
                 f"**Map:** {map_name}\n"
                 f"**Score:** {winner_krunker.get('score', 0)}-{loser_krunker.get('score', 0)}"
             ),

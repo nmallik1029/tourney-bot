@@ -14,6 +14,14 @@ def make_font(size):
         except:
             return ImageFont.load_default()
 
+def make_label_font(size):
+    for path in ("C:/Windows/Fonts/arialbd.ttf", FALLBACK_BOLD):
+        try:
+            return ImageFont.truetype(path, size)
+        except:
+            pass
+    return make_font(size)
+
 def _clamp(v, lo=0.0, hi=10.0):
     return max(lo, min(hi, v))
 
@@ -84,6 +92,80 @@ def rating_color(r: float) -> tuple:
     return _lerp((241, 196, 15), (90, 210, 90), (t - 0.5) / 0.5)
 
 
+def _draw_team_bar_h(draw, cx, cy, width, height, label, a, b, color_a, color_b, f_label, f_val):
+    """A horizontal team-total bar (Krunker style): team A fills from the left, team B from
+    the right, proportional to a:b. Each team's total sits at its end in its colour, and the
+    stat label sits in a dark pill at the centre."""
+    a = max(0, int(a or 0))
+    b = max(0, int(b or 0))
+    total = a + b
+    frac = (a / total) if total else 0.5
+    x0, x1 = cx - width / 2, cx + width / 2
+    y0, y1 = cy - height / 2, cy + height / 2
+    split = x0 + width * frac
+    draw.rectangle([x0, y0, split, y1], fill=color_a)
+    draw.rectangle([split, y0, x1, y1], fill=color_b)
+    draw.rectangle([x0, y0, x1, y1], outline=(15, 16, 19), width=2)
+    # Faint 50% reference mark -- the pill's offset from it shows who's ahead.
+    draw.line([(cx, y0 - 4), (cx, y1 + 4)], fill=(230, 230, 240, 120), width=1)
+
+    def _vtext(x, s, font, fill, anchor_right=False):
+        bb = draw.textbbox((0, 0), s, font=font)
+        tw = bb[2] - bb[0]
+        ty = cy - (bb[3] + bb[1]) / 2
+        draw.text(((x - tw) if anchor_right else x, ty), s, font=font, fill=fill)
+
+    _vtext(x0 - 12, f"{a:,}", f_val, color_a, anchor_right=True)
+    _vtext(x1 + 12, f"{b:,}", f_val, color_b)
+
+    # The label pill rides the split (clamped inside the bar), so where it lands tells you
+    # at a glance which team's fill is longer.
+    lbb = draw.textbbox((0, 0), label, font=f_label)
+    lw = lbb[2] - lbb[0]
+    pad = 6
+    pcx = min(max(split, x0 + lw / 2 + pad + 2), x1 - lw / 2 - pad - 2)
+    ph = height / 2 + 3
+    draw.rectangle([pcx - lw / 2 - pad, cy - ph, pcx + lw / 2 + pad, cy + ph],
+                   fill=(18, 19, 22), outline=(90, 92, 100), width=1)
+    _vtext(pcx - lw / 2, label, f_label, WHITE)
+
+
+def _draw_trophy(draw, x, y, s=26, color=(241, 196, 15)):
+    """A small gold trophy icon with its top-left at (x, y)."""
+    cx = x + s / 2
+    top = y + s * 0.08
+    bowl_w = s * 0.52
+    draw.polygon([
+        (cx - bowl_w / 2, top),
+        (cx + bowl_w / 2, top),
+        (cx + bowl_w * 0.30, top + s * 0.42),
+        (cx - bowl_w * 0.30, top + s * 0.42),
+    ], fill=color)
+    hw = s * 0.18
+    draw.arc([cx - bowl_w / 2 - hw, top - 1, cx - bowl_w / 2 + hw * 0.4, top + s * 0.30], 70, 290, fill=color, width=2)
+    draw.arc([cx + bowl_w / 2 - hw * 0.4, top - 1, cx + bowl_w / 2 + hw, top + s * 0.30], 250, 110, fill=color, width=2)
+    draw.rectangle([cx - s * 0.05, top + s * 0.42, cx + s * 0.05, top + s * 0.60], fill=color)
+    draw.rectangle([cx - s * 0.20, top + s * 0.60, cx + s * 0.20, top + s * 0.68], fill=color)
+    draw.rectangle([cx - s * 0.30, top + s * 0.68, cx + s * 0.30, top + s * 0.78], fill=color)
+
+
+def _draw_curved_mvp(img, x, y, font, color):
+    placements = [
+        # letter, x position, y position, angle
+        ("M", x- 23, y - 13, 30),
+        ("V", x - 5, y - 16, -0),
+        ("P", x + 3,  y - 13,  -30),
+    ]
+
+    for ch, px, py, angle in placements:
+        bb = font.getbbox(ch)
+        layer = Image.new("RGBA", (bb[2] - bb[0] + 8, bb[3] - bb[1] + 8), (0, 0, 0, 0))
+        ld = ImageDraw.Draw(layer)
+        ld.text((4 - bb[0], 4 - bb[1]), ch, font=font, fill=color)
+
+        layer = layer.rotate(angle, resample=Image.BICUBIC, expand=True)
+        img.alpha_composite(layer, (int(px), int(py)))
+
 def ckl_logo(size: int) -> "Image.Image":
     """A clean, rounded-square CKL badge. Uses ckl_logo.png from the project root if
     present, otherwise draws a white badge with padded black 'CKL'. Rendered at 4x and
@@ -122,8 +204,10 @@ GOLD     = (241, 196, 15)
 GRAY     = (160, 160, 175)
 GREEN    = (80, 220, 80)
 STAT_RED = (220, 60, 60)
+CYAN     = (88, 220, 245)
+PINK     = (255, 105, 135)
 
-W       = 1200
+W       = 1380
 PADDING = 36
 ROW_H   = 50
 HDR_H   = 36
@@ -138,6 +222,8 @@ C_DEATH = 730
 C_OBJ   = 825
 C_DMG   = 935
 RATE_CX = 1095        # center of the CKL Rating column (values + logo header)
+ELO_CX  = 1215
+BONUS_CX = 1320
 LOGO_SIZE = 40
 
 MAPS_DIR        = os.path.join(os.path.dirname(__file__), "maps")
@@ -153,6 +239,7 @@ def get_bg_for_map(map_name: str) -> str:
 ROW1_H = 70
 ROW2_H = 38
 TOP_H  = 16 + ROW1_H + ROW2_H + 16 + PADDING * 2
+FOOTER_H = 66   # team OBJ/DMG bars under the leaderboard (replaces the old bottom margin)
 
 
 def _render_scoreboard(
@@ -166,6 +253,7 @@ def _render_scoreboard(
     team2_score: int,
     team2_players: list,
     team2_color: tuple,
+    show_elo: bool = False,
 ):
     """Render the scoreboard and return (PIL image, rows) where rows is a list of
     {name, y, color} describing each drawn player row (y = row top)."""
@@ -178,14 +266,21 @@ def _render_scoreboard(
     )
     all_players.sort(key=lambda x: x[0].get("score", 0), reverse=True)
     all_players = all_players[:MAX_ROWS]
+    show_elo = show_elo or any(
+        "elo_delta" in p or "elo_bonus" in p or "elo_change" in p
+        for p, _ in all_players
+    )
 
-    total_h = TOP_H + HDR_H + len(all_players) * ROW_H + PADDING
+    total_h = TOP_H + HDR_H + len(all_players) * ROW_H + FOOTER_H
 
     max_kills  = max((p.get("kills", 0)           for p, _ in all_players), default=0)
+    min_kills  = min((p.get("kills", 0)           for p, _ in all_players), default=0)
     max_deaths = max((p.get("deaths", 0)          for p, _ in all_players), default=0)
     min_deaths = min((p.get("deaths", 0)          for p, _ in all_players), default=0)
     max_obj    = max((p.get("objective_score", 0) for p, _ in all_players), default=0)
+    min_obj    = min((p.get("objective_score", 0) for p, _ in all_players), default=0)
     max_dmg    = max((p.get("damage_done", 0)     for p, _ in all_players), default=0)
+    min_dmg    = min((p.get("damage_done", 0)     for p, _ in all_players), default=0)
 
     img = Image.new("RGBA", (W, total_h), (0, 0, 0, 0))
 
@@ -215,16 +310,22 @@ def _render_scoreboard(
     draw.text((PADDING, y), tournament_name, font=f_tiny, fill=GRAY)
     y += 18
 
-    bbox_t1 = draw.textbbox((0, 0), f"{team1_name} ({team1_score})", font=f_teams)
+    t1_text = f"{team1_name} ({team1_score})"
+    bbox_t1 = draw.textbbox((0, 0), t1_text, font=f_teams)
     t1_y = y + (ROW1_H - (bbox_t1[3] - bbox_t1[1])) // 2
-    draw.text((PADDING, t1_y), f"{team1_name} ({team1_score})", font=f_teams, fill=team1_color)
+    draw.text((PADDING, t1_y), t1_text, font=f_teams, fill=team1_color)
+    if team1_score > team2_score:
+        _draw_trophy(draw, PADDING + draw.textlength(t1_text, font=f_teams) + 12, t1_y + 2, 28)
 
     map_text = map_name.upper()
     bbox_map = draw.textbbox((0, 0), map_text, font=f_map)
     draw.text((W - PADDING - (bbox_map[2] - bbox_map[0]), y), map_text, font=f_map, fill=WHITE)
     y += ROW1_H
 
-    draw.text((PADDING, y), f"{team2_name} ({team2_score})", font=f_teams, fill=team2_color)
+    t2_text = f"{team2_name} ({team2_score})"
+    draw.text((PADDING, y), t2_text, font=f_teams, fill=team2_color)
+    if team2_score > team1_score:
+        _draw_trophy(draw, PADDING + draw.textlength(t2_text, font=f_teams) + 12, y + 2, 28)
 
     winner = team1_name if team1_score > team2_score else team2_name
     series = f"{max(team1_score, team2_score)}-{min(team1_score, team2_score)}"
@@ -253,6 +354,10 @@ def _render_scoreboard(
     rate_hdr = "CKL Rating"
     rbb = draw.textbbox((0, 0), rate_hdr, font=f_col)
     draw.text((RATE_CX - (rbb[2] - rbb[0]) // 2, y + 8), rate_hdr, font=f_col, fill=GRAY)
+    if show_elo:
+        for cx, label in ((ELO_CX, "ELO"), (BONUS_CX, "Bonus")):
+            bb = draw.textbbox((0, 0), label, font=f_col)
+            draw.text((cx - (bb[2] - bb[0]) // 2, y + 8), label, font=f_col, fill=GRAY)
     draw.line([(PADDING, y + HDR_H - 1), (W - PADDING, y + HDR_H - 1)], fill=(120, 120, 150, 200), width=1)
     y += HDR_H
 
@@ -267,29 +372,89 @@ def _render_scoreboard(
         dmg    = int(p.get("damage_done", 0))
         score  = p.get("score", 0)
 
+        mvp = (i == 0)
         draw.text((C_NUM, text_y), f"{i+1}.", font=f_small, fill=GRAY)
 
         if name:
-            draw.text((C_NAME,  text_y), name[:26], font=f_bold, fill=color)
-            draw.text((C_SCORE, text_y), str(score),  font=f_reg, fill=WHITE)
-            draw.text((C_KILLS, text_y), str(kills),  font=f_reg, fill=GREEN    if kills  == max_kills  and kills  > 0 else WHITE)
-            if deaths == min_deaths and min_deaths != max_deaths:
-                death_fill = GREEN          # fewest deaths in the lobby
-            elif deaths == max_deaths and deaths > 0:
-                death_fill = STAT_RED       # most deaths in the lobby
-            else:
-                death_fill = WHITE
-            draw.text((C_DEATH, text_y), str(deaths), font=f_reg, fill=death_fill)
-            draw.text((C_OBJ,   text_y), str(obj),    font=f_reg, fill=GREEN    if obj    == max_obj    and obj    > 0 else WHITE)
-            draw.text((C_DMG,   text_y), str(dmg),    font=f_reg, fill=GREEN    if dmg    == int(max_dmg) and dmg  > 0 else WHITE)
+            def put(x, s, font, fill, bold=False):
+                draw.text((x, text_y), s, font=font, fill=fill)
+                if bold:
+                    draw.text((x + 1, text_y), s, font=font, fill=fill)
+
+            def put_center(cx, s, font, fill, bold=False):
+                bb = draw.textbbox((0, 0), s, font=font)
+                x = cx - (bb[2] - bb[0]) // 2
+                draw.text((x, text_y), s, font=font, fill=fill)
+                if bold:
+                    draw.text((x + 1, text_y), s, font=font, fill=fill)
+
+            def signed(n):
+                n = int(n or 0)
+                return f"+{n}" if n > 0 else str(n)
+
+            def high_low_fill(value, low, high, higher_is_better=True):
+                if low == high:
+                    return WHITE
+                if higher_is_better:
+                    if value == high:
+                        return GREEN
+                    if value == low:
+                        return STAT_RED
+                else:
+                    if value == low:
+                        return GREEN
+                    if value == high:
+                        return STAT_RED
+                return WHITE
+
+            put(C_NAME,  name[:26], f_bold, GOLD if mvp else color, bold=mvp)
+            put(C_SCORE, str(score), f_reg, WHITE)
+            put(C_KILLS, str(kills), f_reg, high_low_fill(kills, min_kills, max_kills))
+            put(C_DEATH, str(deaths), f_reg, high_low_fill(deaths, min_deaths, max_deaths, higher_is_better=False))
+            put(C_OBJ,   str(obj), f_reg, high_low_fill(obj, min_obj, max_obj))
+            put(C_DMG,   str(dmg), f_reg, high_low_fill(dmg, int(min_dmg), int(max_dmg)))
 
             rating = ckl_rating(kills, deaths, obj, dmg, rounds)
             rtxt = f"{rating:.1f}"
             rbb = draw.textbbox((0, 0), rtxt, font=f_bold)
-            draw.text((RATE_CX - (rbb[2] - rbb[0]) // 2, text_y), rtxt, font=f_bold, fill=rating_color(rating))
+            put(RATE_CX - (rbb[2] - rbb[0]) // 2, rtxt, f_bold, rating_color(rating))
+
+            if show_elo:
+                has_change = "elo_delta" in p or "elo_bonus" in p or "elo_change" in p
+                if not has_change:
+                    put_center(ELO_CX, "--", f_reg, GRAY)
+                    put_center(BONUS_CX, "--", f_reg, GRAY)
+                    draw.line([(PADDING, y + ROW_H - 1), (W - PADDING, y + ROW_H - 1)], fill=(80, 80, 100, 100), width=1)
+                    y += ROW_H
+                    continue
+
+                change = p.get("elo_change") or {}
+                delta = int(p.get("elo_delta", change.get("delta", 0)) or 0)
+                bonus = int(p.get("elo_bonus", change.get("bonus", 0)) or 0)
+                delta_fill = GREEN if delta > 0 else (STAT_RED if delta < 0 else GRAY)
+                bonus_fill = CYAN if bonus > 0 else (PINK if bonus < 0 else GRAY)
+                put_center(ELO_CX, signed(delta), f_reg, delta_fill)
+
+                btxt = signed(bonus)
+                put_center(BONUS_CX, btxt, f_reg, bonus_fill)
 
         draw.line([(PADDING, y + ROW_H - 1), (W - PADDING, y + ROW_H - 1)], fill=(80, 80, 100, 100), width=1)
         y += ROW_H
+
+    # Team-total bars under the leaderboard: OBJ then DMG, horizontal (Krunker style).
+    t1_obj = sum(int(p.get("objective_score", 0)) for p in team1_players)
+    t2_obj = sum(int(p.get("objective_score", 0)) for p in team2_players)
+    t1_dmg = sum(int(p.get("damage_done", 0)) for p in team1_players)
+    t2_dmg = sum(int(p.get("damage_done", 0)) for p in team2_players)
+    f_barlbl = make_font(11)
+    f_barval = make_font(15)
+    bar_cx, bar_w, bar_h = W // 2, 680, 11
+    # Even *visual* spacing: equal gaps above, between, and below the two bars. The value
+    # labels are ~16px tall, so we space by their half-height (h), not just the centers.
+    h = 8
+    g = (FOOTER_H - 4 * h) // 3
+    _draw_team_bar_h(draw, bar_cx, y + g + h + 20, bar_w, bar_h, "OBJ", t1_obj, t2_obj, team1_color, team2_color, f_barlbl, f_barval)
+    _draw_team_bar_h(draw, bar_cx, y + FOOTER_H - g - h + 20, bar_w, bar_h, "DMG", t1_dmg, t2_dmg, team1_color, team2_color, f_barlbl, f_barval)
 
     return img, rows
 
@@ -305,11 +470,13 @@ def draw_scoreboard(
     team2_score: int,
     team2_players: list,
     team2_color: tuple,
+    show_elo: bool = False,
 ) -> io.BytesIO:
     img, _ = _render_scoreboard(
         tournament_name, map_name,
         team1_name, team1_score, team1_players, team1_color,
         team2_name, team2_score, team2_players, team2_color,
+        show_elo=show_elo,
     )
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -399,29 +566,31 @@ def draw_flag_scoreboard(
 
 if __name__ == "__main__":
     t1 = [
-        {"name": "AraffyWappy",   "score": 3910, "kills": 29, "deaths": 21, "objective_score": 610, "damage_done": 3004},
-        {"name": "LESHAWN",       "score": 3130, "kills": 23, "deaths": 23, "objective_score": 430, "damage_done": 2099},
-        {"name": "TravisScottAl", "score": 2865, "kills": 20, "deaths": 21, "objective_score": 550, "damage_done": 1634},
-        {"name": "mcyy",          "score": 2535, "kills": 23, "deaths": 31, "objective_score": 220, "damage_done": 1991},
+        {"name": "AraffyWappy",   "score": 5210, "kills": 48, "deaths": 29, "objective_score": 830, "damage_done": 5100, "elo_delta": 78, "elo_bonus": 24},
+        {"name": "LESHAWN",       "score": 4580, "kills": 40, "deaths": 31, "objective_score": 720, "damage_done": 4200, "elo_delta": 61, "elo_bonus": 10},
+        {"name": "TravisScottAl", "score": 3890, "kills": 34, "deaths": 34, "objective_score": 560, "damage_done": 3500, "elo_delta": 50, "elo_bonus": 2},
+        {"name": "mcyy",          "score": 3120, "kills": 27, "deaths": 38, "objective_score": 420, "damage_done": 2900, "elo_delta": 39, "elo_bonus": 0},
     ]
     t2 = [
-        {"name": "VollerPlays",   "score": 380,  "kills": 3,  "deaths": 1,  "objective_score": 30,  "damage_done": 214},
-        {"name": "HypeZeus",      "score": 165,  "kills": 1,  "deaths": 2,  "objective_score": 90,  "damage_done": 95},
-        {"name": "MemoMINI",      "score": 120,  "kills": 1,  "deaths": 3,  "objective_score": 40,  "damage_done": 80},
-        {"name": "ECODOT",        "score": 90,   "kills": 0,  "deaths": 2,  "objective_score": 20,  "damage_done": 50},
+        {"name": "VollerPlays",   "score": 4330, "kills": 39, "deaths": 35, "objective_score": 620, "damage_done": 4100, "elo_delta": -34, "elo_bonus": 8},
+        {"name": "HypeZeus",      "score": 3375, "kills": 30, "deaths": 37, "objective_score": 460, "damage_done": 3200, "elo_delta": -52, "elo_bonus": 0},
+        {"name": "MemoMINI",      "score": 2790, "kills": 24, "deaths": 39, "objective_score": 350, "damage_done": 2700, "elo_delta": -64, "elo_bonus": -4},
+        {"name": "ECODOT",        "score": 2110, "kills": 18, "deaths": 42, "objective_score": 230, "damage_done": 2200, "elo_delta": -78, "elo_bonus": -16},
     ]
     buf = draw_scoreboard(
-        tournament_name="FRVR X NACK $700 4v4 Tournament",
+        tournament_name="Competitive Krunker League",
         map_name="Sandstorm",
-        team1_name="CEAF OWNERS",
+        team1_name="AraffyWappy",
         team1_score=2,
         team1_players=t1,
         team1_color=RED,
-        team2_name="UFO",
+        team2_name="mcyy",
         team2_score=0,
         team2_players=t2,
         team2_color=WHITE,
+        show_elo=True,
     )
-    with open("/home/claude/test_scoreboard.png", "wb") as f:
+    out_path = os.path.join(os.path.dirname(__file__), "scoreboard_preview.png")
+    with open(out_path, "wb") as f:
         f.write(buf.read())
-    print("Saved")
+    print(f"Saved {out_path}")

@@ -488,6 +488,40 @@ def reset_rating(discord_id: int):
     save_pug_data()
 
 
+def _reset_cached_stats_record(p: dict):
+    p["elo"] = ELO_START
+    p["wins"] = 0
+    p["losses"] = 0
+    p["kills"] = 0
+    p["deaths"] = 0
+    p["obj"] = 0
+    p["dmg"] = 0
+    p["games"] = 0
+    p["rating_sum"] = 0.0
+    p["rating_games"] = 0
+    p["elo_history"] = []
+    p["peak_elo"] = ELO_START
+    p["low_kd_flags"] = 0
+    p["low_obj_flags"] = 0
+    p["stat_history"] = []
+
+
+def reset_cached_stats(discord_id: int):
+    """Reset one player's cached PUG stats while preserving profile/mod data."""
+    _reset_cached_stats_record(get_player(discord_id))
+    save_pug_data()
+
+
+def reset_cached_stats_all() -> int:
+    """Reset cached PUG stats for every player, preserving links/regions/mod state."""
+    count = 0
+    for p in pug_data["players"].values():
+        _reset_cached_stats_record(p)
+        count += 1
+    save_pug_data()
+    return count
+
+
 def top_rated_players(limit: int = 5) -> list:
     """Return [(discord_id, avg_rating, rated_games)] for players with >=1 rated game."""
     out = []
