@@ -632,9 +632,11 @@ def build_rank_card(guild: discord.Guild, member: discord.Member, stat_key: str)
     region_tag = f" [{region}]" if region else ""
 
     embed = discord.Embed(title=f"Ranked Data for {username}{region_tag}", color=0x5865F2)
-    embed.set_thumbnail(url=member.display_avatar.url)
 
     if stat_key == "stats":
+        # Only the Stats tab gets the avatar thumbnail -- on the graph tabs there are no
+        # fields beside it, so a thumbnail would leave an empty band above the chart.
+        embed.set_thumbnail(url=member.display_avatar.url)
         elo = p.get("elo", ELO_START)
         wins, losses = p.get("wins", 0), p.get("losses", 0)
         kills, deaths = p.get("kills", 0), p.get("deaths", 0)
