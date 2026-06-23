@@ -120,7 +120,7 @@ def _day_label(ts: float) -> str:
     return f"{dt.month}/{dt.day}"
 
 
-def _aggregate(series: list) -> list:
+def aggregate_series(series: list) -> list:
     """Turn [(ts, value), ...] into plotted [(label, value), ...]. Per game while small;
     once past PER_GAME_LIMIT, one averaged point per calendar day."""
     if not series:
@@ -156,49 +156,34 @@ def _base_card(bg_bytes: bytes | None) -> Image.Image:
     return Image.new("RGBA", (CARD_W, CARD_H), (*BG, 255))
 
 
-def draw_stat_graph(series: list, stat_key: str, *, bg_bytes: bytes | None = None,
-                    games_total: int | None = None) -> io.BytesIO:
-    """Render the rank trend card for one stat.
+def draw_stat_graph(points: list, stat_key: str, *, bg_bytes: bytes | None = None) -> io.BytesIO:
+    """Render the rank trend card for one stat -- just the graph, no header text.
 
-    `series` is [(timestamp, value), ...] oldest-first from a player's snapshot history.
+    `points` is a prepared [(x_label, value), ...] oldest-first (the caller decides whether
+    labels are dates or game numbers, and does any per-day aggregation).
     """
-    label, dec, pct = RANK_STAT_META.get(stat_key, RANK_STAT_META["elo"])
+    _label, dec, pct = RANK_STAT_META.get(stat_key, RANK_STAT_META["elo"])
     img = _base_card(bg_bytes)
     draw = ImageDraw.Draw(img)
 
-    f_label = make_font(22)
-    f_cur = make_font(30)
-    f_small = make_font(15)
+    f_small = make_font(16)
     f_axis = make_font(14)
     f_date = make_font(13)
 
-    points = _aggregate(series)
-
-    # Header band.
-    draw.text((24, 16), label.upper(), font=f_label, fill=TEXT)
-    if not points:
-        draw.text((24, 54), "Not enough games yet -- play a pug to start the trend.",
-                  font=f_small, fill=DIM)
+    if len(points) < 2:
+        msg = "Not enough games yet -- play a few pugs to start the trend."
+        mw = draw.textlength(msg, font=f_small)
+        draw.text(((CARD_W - mw) / 2, CARD_H / 2 - 10), msg, font=f_small, fill=DIM)
         buf = io.BytesIO()
         img.convert("RGB").save(buf, format="PNG")
         buf.seek(0)
         return buf
 
     vals = [v for _lbl, v in points]
-    cur, peak, low = vals[-1], max(vals), min(vals)
-    avg = sum(vals) / len(vals)
-    n_games = games_total if games_total is not None else len(series)
+    peak, low = max(vals), min(vals)
 
-    # Current value next to the label; summary stats right-aligned.
-    lbl_w = draw.textlength(label.upper(), font=f_label)
-    draw.text((24 + lbl_w + 16, 12), _fmt(cur, dec, pct), font=f_cur, fill=LINE)
-    summary = (f"PEAK {_fmt(peak, dec, pct)}   AVG {_fmt(avg, dec, pct)}   "
-               f"LOW {_fmt(low, dec, pct)}   {n_games} GAMES")
-    sw = draw.textlength(summary, font=f_small)
-    draw.text((CARD_W - 24 - sw, 24), summary, font=f_small, fill=DIM)
-
-    # Plot geometry.
-    M_L, M_R, M_T, M_B = 58, 58, 74, 44
+    # Plot geometry (no header band -- the chart fills the card).
+    M_L, M_R, M_T, M_B = 58, 58, 30, 46
     plot_w = CARD_W - M_L - M_R
     plot_h = CARD_H - M_T - M_B
     lo, hi = low, peak
@@ -225,15 +210,32 @@ def draw_stat_graph(series: list, stat_key: str, *, bg_bytes: bytes | None = Non
         draw.text((M_L - 8 - draw.textlength(vtxt, font=f_axis), gy - 8), vtxt, font=f_axis, fill=AXIS)
         draw.text((CARD_W - M_R + 8, gy - 8), vtxt, font=f_axis, fill=AXIS)
 
-    # Vertical tick per point; date labels thinned to whatever fits the width.
-    max_labels = max(2, plot_w // 52)
-    step = max(1, (n + max_labels - 1) // max_labels)
-    for i, (lbl, _v) in enumerate(points):
+    # Vertical tick per point.
+    for i in range(n):
         px = x_at(i)
         draw.line([(px, M_T), (px, CARD_H - M_B)], fill=VGRID, width=1)
-        if i % step == 0 or i == n - 1:
-            lw = draw.textlength(lbl, font=f_date)
-            draw.text((px - lw / 2, CARD_H - M_B + 8), lbl, font=f_date, fill=DIM)
+
+    # X labels: greedy left-to-right with a minimum gap so they never cram, always keeping
+    # the first and last, and clamped inside the card so edge labels don't get clipped.
+    min_gap = 10
+    keep, last_right = [], -1e9
+    for i in range(n):
+        lw = draw.textlength(points[i][0], font=f_date)
+        x0 = x_at(i) - lw / 2
+        if x0 >= last_right + min_gap:
+            keep.append(i)
+            last_right = x_at(i) + lw / 2
+    if keep and keep[-1] != n - 1:
+        last_lw = draw.textlength(points[n - 1][0], font=f_date)
+        last_x0 = x_at(n - 1) - last_lw / 2
+        while keep and (x_at(keep[-1]) + draw.textlength(points[keep[-1]][0], font=f_date) / 2) > last_x0 - min_gap:
+            keep.pop()
+        keep.append(n - 1)
+    for i in keep:
+        lbl = points[i][0]
+        lw = draw.textlength(lbl, font=f_date)
+        x0 = max(4, min(x_at(i) - lw / 2, CARD_W - lw - 4))
+        draw.text((x0, CARD_H - M_B + 10), lbl, font=f_date, fill=DIM)
 
     # The line.
     pts = [(x_at(i), y_at(v)) for i, v in enumerate(vals)]
