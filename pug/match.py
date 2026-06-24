@@ -23,6 +23,7 @@ from pug.storage import (
     pug_matches,
     sim_players,
     get_elo,
+    get_player,
     primary_username,
     username_to_discord,
     next_queue_number,
@@ -860,7 +861,15 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
 
 
 def compute_host_region(match: dict) -> tuple[str, str]:
-    """Use the deployment-configured Krunker host server for every match."""
+    """Pick the host server from the lobby's region mix so EU doesn't always get screwed:
+    EU-heavy lobbies shift to New York, very EU-heavy to Frankfurt; otherwise the
+    deployment-configured default (SET_REGION, Dallas for CKL)."""
+    na = sum(1 for p in match.get("players", []) if get_player(p).get("region", "").upper() == "NA")
+    eu = sum(1 for p in match.get("players", []) if get_player(p).get("region", "").upper() == "EU")
+    if eu >= 6 and na <= 2:
+        return "FRA", "Frankfurt"
+    if eu >= 3 and na <= 5:
+        return "NY", "New York"
     return SET_REGION, SET_REGION_NAME
 
 
