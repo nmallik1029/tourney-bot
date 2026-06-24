@@ -49,9 +49,8 @@ def _rating_curve(x: float) -> float:
 def ckl_rating(kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2) -> float:
     """CKL performance rating on a 0-10 scale.
 
-    Calibrated for full-map CKL output instead of per-round averages: monster games
-    should be able to reach 9.5+, while the final score is still clamped to 0-10.
-    `rounds` is kept for existing callers but is no longer used by this formula.
+    Calibrated to a 2-round baseline so 2-1 maps do not automatically inflate CKL
+    rating from having more time to collect kills, OBJ, and damage.
 
       ~9-10 godlike | ~8 elite | ~7 great | ~5 average | ~3-4 bad | ~1 awful
     """
@@ -59,16 +58,23 @@ def ckl_rating(kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2) -> 
     deaths = max(0, int(deaths or 0))
     obj = max(0, int(obj or 0))
     dmg = max(0, int(dmg or 0))
+    rounds = max(1, int(rounds or 2))
 
     if kills == 0 and deaths == 0 and obj == 0 and dmg == 0:
         return 0.0
 
+    round_factor = 2.0 / rounds
+    norm_kills = kills * round_factor
+    norm_deaths = deaths * round_factor
+    norm_obj = obj * round_factor
+    norm_dmg = dmg * round_factor
+
     kd = kills / deaths if deaths else float(kills)
     kd_s = 5 + (kd - 1) * 5
-    kill_s = kills / 5
-    surv_s = max(0, (60 - deaths) * 0.25)
-    obj_s = obj / 130
-    dmg_s = dmg / 700
+    kill_s = norm_kills / 5
+    surv_s = max(0, (60 - norm_deaths) * 0.25)
+    obj_s = norm_obj / 130
+    dmg_s = norm_dmg / 700
 
     avg = (
         kd_s * 0.15 +
@@ -267,7 +273,7 @@ def _render_scoreboard(
     all_players.sort(key=lambda x: x[0].get("score", 0), reverse=True)
     all_players = all_players[:MAX_ROWS]
     show_elo = show_elo or any(
-        "elo_delta" in p or "elo_bonus" in p or "elo_change" in p
+        "elo_base" in p or "elo_delta" in p or "elo_bonus" in p or "elo_change" in p
         for p, _ in all_players
     )
 
@@ -420,7 +426,7 @@ def _render_scoreboard(
             put(RATE_CX - (rbb[2] - rbb[0]) // 2, rtxt, f_bold, rating_color(rating))
 
             if show_elo:
-                has_change = "elo_delta" in p or "elo_bonus" in p or "elo_change" in p
+                has_change = "elo_base" in p or "elo_delta" in p or "elo_bonus" in p or "elo_change" in p
                 if not has_change:
                     put_center(ELO_CX, "--", f_reg, GRAY)
                     put_center(BONUS_CX, "--", f_reg, GRAY)
@@ -429,11 +435,11 @@ def _render_scoreboard(
                     continue
 
                 change = p.get("elo_change") or {}
-                delta = int(p.get("elo_delta", change.get("delta", 0)) or 0)
+                base = int(p.get("elo_base", change.get("base", p.get("elo_delta", change.get("delta", 0)))) or 0)
                 bonus = int(p.get("elo_bonus", change.get("bonus", 0)) or 0)
-                delta_fill = GREEN if delta > 0 else (STAT_RED if delta < 0 else GRAY)
+                delta_fill = GREEN if base > 0 else (STAT_RED if base < 0 else GRAY)
                 bonus_fill = CYAN if bonus > 0 else (PINK if bonus < 0 else GRAY)
-                put_center(ELO_CX, signed(delta), f_reg, delta_fill)
+                put_center(ELO_CX, signed(base), f_reg, delta_fill)
 
                 btxt = signed(bonus)
                 put_center(BONUS_CX, btxt, f_reg, bonus_fill)
@@ -566,16 +572,16 @@ def draw_flag_scoreboard(
 
 if __name__ == "__main__":
     t1 = [
-        {"name": "AraffyWappy",   "score": 5210, "kills": 48, "deaths": 29, "objective_score": 830, "damage_done": 5100, "elo_delta": 78, "elo_bonus": 24},
-        {"name": "LESHAWN",       "score": 4580, "kills": 40, "deaths": 31, "objective_score": 720, "damage_done": 4200, "elo_delta": 61, "elo_bonus": 10},
-        {"name": "TravisScottAl", "score": 3890, "kills": 34, "deaths": 34, "objective_score": 560, "damage_done": 3500, "elo_delta": 50, "elo_bonus": 2},
-        {"name": "mcyy",          "score": 3120, "kills": 27, "deaths": 38, "objective_score": 420, "damage_done": 2900, "elo_delta": 39, "elo_bonus": 0},
+        {"name": "AraffyWappy",   "score": 5210, "kills": 48, "deaths": 29, "objective_score": 830, "damage_done": 5100, "elo_base": 54, "elo_delta": 78, "elo_bonus": 24},
+        {"name": "LESHAWN",       "score": 4580, "kills": 40, "deaths": 31, "objective_score": 720, "damage_done": 4200, "elo_base": 51, "elo_delta": 61, "elo_bonus": 10},
+        {"name": "TravisScottAl", "score": 3890, "kills": 34, "deaths": 34, "objective_score": 560, "damage_done": 3500, "elo_base": 48, "elo_delta": 50, "elo_bonus": 2},
+        {"name": "mcyy",          "score": 3120, "kills": 27, "deaths": 38, "objective_score": 420, "damage_done": 2900, "elo_base": 39, "elo_delta": 39, "elo_bonus": 0},
     ]
     t2 = [
-        {"name": "VollerPlays",   "score": 4330, "kills": 39, "deaths": 35, "objective_score": 620, "damage_done": 4100, "elo_delta": -34, "elo_bonus": 8},
-        {"name": "HypeZeus",      "score": 3375, "kills": 30, "deaths": 37, "objective_score": 460, "damage_done": 3200, "elo_delta": -52, "elo_bonus": 0},
-        {"name": "MemoMINI",      "score": 2790, "kills": 24, "deaths": 39, "objective_score": 350, "damage_done": 2700, "elo_delta": -64, "elo_bonus": -4},
-        {"name": "ECODOT",        "score": 2110, "kills": 18, "deaths": 42, "objective_score": 230, "damage_done": 2200, "elo_delta": -78, "elo_bonus": -16},
+        {"name": "VollerPlays",   "score": 4330, "kills": 39, "deaths": 35, "objective_score": 620, "damage_done": 4100, "elo_base": -42, "elo_delta": -34, "elo_bonus": 8},
+        {"name": "HypeZeus",      "score": 3375, "kills": 30, "deaths": 37, "objective_score": 460, "damage_done": 3200, "elo_base": -52, "elo_delta": -52, "elo_bonus": 0},
+        {"name": "MemoMINI",      "score": 2790, "kills": 24, "deaths": 39, "objective_score": 350, "damage_done": 2700, "elo_base": -60, "elo_delta": -64, "elo_bonus": -4},
+        {"name": "ECODOT",        "score": 2110, "kills": 18, "deaths": 42, "objective_score": 230, "damage_done": 2200, "elo_base": -62, "elo_delta": -78, "elo_bonus": -16},
     ]
     buf = draw_scoreboard(
         tournament_name="Competitive Krunker League",

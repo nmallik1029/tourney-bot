@@ -36,17 +36,23 @@ async def test_scoreboard(interaction: discord.Interaction, team_size: int, map_
     await interaction.response.defer(ephemeral=True)
 
     fake_changes = [
-        {"delta": 78, "bonus": 24},
-        {"delta": 61, "bonus": 10},
-        {"delta": 50, "bonus": 2},
-        {"delta": 39, "bonus": 0},
-        {"delta": -34, "bonus": 8},
-        {"delta": -52, "bonus": 0},
-        {"delta": -64, "bonus": -4},
-        {"delta": -78, "bonus": -16},
+        {"base": 54, "bonus": 24, "delta": 78},
+        {"base": 51, "bonus": 10, "delta": 61},
+        {"base": 48, "bonus": 2, "delta": 50},
+        {"base": 39, "bonus": 0, "delta": 39},
+        {"base": -42, "bonus": 8, "delta": -34},
+        {"base": -52, "bonus": 0, "delta": -52},
+        {"base": -60, "bonus": -4, "delta": -64},
+        {"base": -62, "bonus": -16, "delta": -78},
     ]
     fake_rows = [
-        {**p, "elo_change": fake_changes[i], "elo_delta": fake_changes[i]["delta"], "elo_bonus": fake_changes[i]["bonus"]}
+        {
+            **p,
+            "elo_change": fake_changes[i],
+            "elo_base": fake_changes[i]["base"],
+            "elo_delta": fake_changes[i]["delta"],
+            "elo_bonus": fake_changes[i]["bonus"],
+        }
         for i, p in enumerate(FAKE_PLAYERS)
     ]
     team1_players = fake_rows[:team_size]

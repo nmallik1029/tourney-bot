@@ -1335,6 +1335,7 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
             if isinstance(change, dict):
                 row["discord_id"] = did
                 row["elo_change"] = change
+                row["elo_base"] = change.get("base", 0)
                 row["elo_delta"] = change.get("delta", 0)
                 row["elo_bonus"] = change.get("bonus", 0)
             return row
