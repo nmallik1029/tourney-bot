@@ -7,3 +7,5 @@ pug_data.json
 __pycache__/
 *.pyc
 .claude/
+scoreboard_preview.png
+test_clan.py

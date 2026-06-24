@@ -136,6 +136,15 @@ def _draw_team_bar_h(draw, cx, cy, width, height, label, a, b, color_a, color_b,
     _vtext(pcx - lw / 2, label, f_label, WHITE)
 
 
+def _draw_check(draw, x, y, s=18, color=(58, 160, 255)):
+    """A small Krunker-style verified badge: a blue disc with a white check, top-left at (x, y)."""
+    draw.ellipse([x, y, x + s, y + s], fill=color)
+    draw.line(
+        [(x + s * 0.27, y + s * 0.52), (x + s * 0.43, y + s * 0.70), (x + s * 0.76, y + s * 0.30)],
+        fill=(255, 255, 255), width=2, joint="curve",
+    )
+
+
 def _draw_trophy(draw, x, y, s=26, color=(241, 196, 15)):
     """A small gold trophy icon with its top-left at (x, y)."""
     cx = x + s / 2
@@ -210,6 +219,21 @@ GOLD     = (241, 196, 15)
 GRAY     = (160, 160, 175)
 GREEN    = (80, 220, 80)
 STAT_RED = (220, 60, 60)
+
+# Verified clans -- their clan tag renders GOLD on the scoreboard (every other clan is
+# grey). TO ADD OR REMOVE A VERIFIED CLAN, just edit this list. Capitalization doesn't
+# matter (matching is case-insensitive); keep one clan per line for easy diffs.
+VERIFIED_CLAN_NAMES = [
+    "Arae",
+    "SCTE",
+    "Lain",
+    "Fame",
+    "KPD",
+    "Jump",
+    "Art",
+    "Dev",
+]
+VERIFIED_CLANS = {c.strip().lower() for c in VERIFIED_CLAN_NAMES}
 CYAN     = (88, 220, 245)
 PINK     = (255, 105, 135)
 
@@ -260,9 +284,15 @@ def _render_scoreboard(
     team2_players: list,
     team2_color: tuple,
     show_elo: bool = False,
+    clans: dict | None = None,
+    verified: set | None = None,
 ):
     """Render the scoreboard and return (PIL image, rows) where rows is a list of
-    {name, y, color} describing each drawn player row (y = row top)."""
+    {name, y, color} describing each drawn player row (y = row top).
+
+    `clans` is an optional {username_lower: clan_tag} map; a player's clan is shown in
+    grey brackets after their name. `verified` is a set of lowercased usernames that get
+    a blue verified checkmark."""
     rows = []
     rounds = max(1, int(team1_score or 0) + int(team2_score or 0))  # BO3: 2-0 -> 2, 2-1 -> 3
 
@@ -413,7 +443,19 @@ def _render_scoreboard(
                         return STAT_RED
                 return WHITE
 
-            put(C_NAME,  name[:26], f_bold, GOLD if mvp else color, bold=mvp)
+            nlow = name.strip().lower()
+            clan = (clans or {}).get(nlow)
+            is_verified = nlow in (verified or set())
+            # Order: [verified check] name [clan]. The check sits in the rank/name gap so
+            # names stay column-aligned whether or not a player is verified.
+            if is_verified:
+                _draw_check(draw, C_NAME - 25, text_y + 5, 18)
+            disp_name = name[:20] if clan else name[:26]
+            put(C_NAME,  disp_name, f_bold, GOLD if mvp else color, bold=mvp)
+            if clan:
+                tag_x = C_NAME + draw.textlength(disp_name, font=f_bold) + 10
+                clan_color = GOLD if clan.strip().lower() in VERIFIED_CLANS else GRAY
+                draw.text((tag_x, text_y + 4), f"[{clan}]", font=f_small, fill=clan_color)
             put(C_SCORE, str(score), f_reg, WHITE)
             put(C_KILLS, str(kills), f_reg, high_low_fill(kills, min_kills, max_kills))
             put(C_DEATH, str(deaths), f_reg, high_low_fill(deaths, min_deaths, max_deaths, higher_is_better=False))
@@ -477,12 +519,14 @@ def draw_scoreboard(
     team2_players: list,
     team2_color: tuple,
     show_elo: bool = False,
+    clans: dict | None = None,
+    verified: set | None = None,
 ) -> io.BytesIO:
     img, _ = _render_scoreboard(
         tournament_name, map_name,
         team1_name, team1_score, team1_players, team1_color,
         team2_name, team2_score, team2_players, team2_color,
-        show_elo=show_elo,
+        show_elo=show_elo, clans=clans, verified=verified,
     )
     buf = io.BytesIO()
     img.save(buf, format="PNG")

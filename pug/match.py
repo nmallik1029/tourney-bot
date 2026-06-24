@@ -638,10 +638,27 @@ async def dissolve_match(match: dict, bot, reason: str = ""):
 
 
 # draft
+async def _prefetch_match_clans(match: dict):
+    """Best-effort: look up each player's Krunker clan + verified status and stash it on
+    the match (keyed by lowercased username) so the result scoreboard can show [CLAN] tags
+    and verified checkmarks with no lookup at match-end. Never raises."""
+    try:
+        from services.krunker import prefetch_players
+        names = [primary_username(p, "") for p in match.get("players", [])]
+        meta = await prefetch_players([n for n in names if n])
+        match.setdefault("clan_meta", {}).update(meta)
+    except Exception as e:
+        print(f"[Krunker] match clan prefetch failed: {e}")
+
+
 async def start_draft(match: dict, bot):
     if match["phase"] != "checkin":
         return
     match["phase"] = "draft"
+
+    # The draft is a multi-minute window -- kick off clan lookups now (in the background)
+    # so the result scoreboard has clan tags ready without any lookup at match-end.
+    asyncio.create_task(_prefetch_match_clans(match))
 
     # Remove the now-stale check-in message (otherwise the last checked-in player still
     # shows as "waiting" while the draft starts).
@@ -957,6 +974,18 @@ async def replace_player(match: dict, out_id: int, in_id: int, bot):
 
     await _swap_channel_perms(match, out_id, in_id, guild)
     await refresh_phase_message(match, bot)
+
+    # Look up the subbed-in player's clan + verified (background) so the card stays accurate.
+    async def _sub_clan():
+        try:
+            from services.krunker import fetch_player
+            uname = primary_username(in_id, "")
+            if uname:
+                meta = await fetch_player(uname)
+                match.setdefault("clan_meta", {})[uname.strip().lower()] = meta
+        except Exception as e:
+            print(f"[Krunker] sub clan fetch failed: {e}")
+    asyncio.create_task(_sub_clan())
 
 
 async def _swap_channel_perms(match: dict, out_id: int, in_id: int, guild):
@@ -1360,6 +1389,8 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
             team2_players=loser_players,
             team2_color=WHITE,
             show_elo=True,
+            clans={u: m.get("clan", "") for u, m in match.get("clan_meta", {}).items() if m.get("clan")},
+            verified={u for u, m in match.get("clan_meta", {}).items() if m.get("verified")},
         )
         image_file = discord.File(img_buf, filename="scoreboard.png")
     except Exception as e:
