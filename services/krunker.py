@@ -21,7 +21,12 @@ try:
 except Exception:  # pragma: no cover
     msgpack = None
 
-CACHE_TTL = 12 * 3600        # clan/verified change rarely; re-check at most twice a day
+# How long a looked-up clan/verified result is reused before we fetch it again. Clans
+# change rarely, so a short window keeps things fresh without re-loading the same profiles
+# every game (which, from a datacenter IP, raises the risk Krunker captcha-blocks us).
+#   3600  = re-check at most once an hour per player (recommended)
+#   0     = look up every player every game (freshest, but most requests / block risk)
+CACHE_TTL = 3600
 _LOOKUP_TIMEOUT = 22
 _CONCURRENCY = 3
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
