@@ -615,30 +615,45 @@ def draw_flag_scoreboard(
 
 
 if __name__ == "__main__":
+    # Realistic test card. Mix of: verified clans (gold tag: Arae/Fame/KPD), regular clans
+    # (grey: TRGT/Hovi/VEIL), verified players (blue check -- incl. a clanless one), and
+    # plain players. `clans` is keyed by lowercased name; `verified` is a set of names.
     t1 = [
-        {"name": "AraffyWappy",   "score": 5210, "kills": 48, "deaths": 29, "objective_score": 830, "damage_done": 5100, "elo_base": 54, "elo_delta": 78, "elo_bonus": 24},
-        {"name": "LESHAWN",       "score": 4580, "kills": 40, "deaths": 31, "objective_score": 720, "damage_done": 4200, "elo_base": 51, "elo_delta": 61, "elo_bonus": 10},
-        {"name": "TravisScottAl", "score": 3890, "kills": 34, "deaths": 34, "objective_score": 560, "damage_done": 3500, "elo_base": 48, "elo_delta": 50, "elo_bonus": 2},
-        {"name": "mcyy",          "score": 3120, "kills": 27, "deaths": 38, "objective_score": 420, "damage_done": 2900, "elo_base": 39, "elo_delta": 39, "elo_bonus": 0},
+        {"name": "opp_reality", "score": 7915, "kills": 60, "deaths": 35, "objective_score": 890,  "damage_done": 5955, "elo_base": 84, "elo_bonus": 30},
+        {"name": "tjwysk",      "score": 6580, "kills": 49, "deaths": 47, "objective_score": 950,  "damage_done": 5842, "elo_base": 66, "elo_bonus": 12},
+        {"name": "Lvpez",       "score": 5640, "kills": 44, "deaths": 45, "objective_score": 810,  "damage_done": 5560, "elo_base": 71, "elo_bonus": 21},
+        {"name": "Lunarz",      "score": 5210, "kills": 37, "deaths": 47, "objective_score": 910,  "damage_done": 5087, "elo_base": 49, "elo_bonus": -4},
     ]
     t2 = [
-        {"name": "VollerPlays",   "score": 4330, "kills": 39, "deaths": 35, "objective_score": 620, "damage_done": 4100, "elo_base": -42, "elo_delta": -34, "elo_bonus": 8},
-        {"name": "HypeZeus",      "score": 3375, "kills": 30, "deaths": 37, "objective_score": 460, "damage_done": 3200, "elo_base": -52, "elo_delta": -52, "elo_bonus": 0},
-        {"name": "MemoMINI",      "score": 2790, "kills": 24, "deaths": 39, "objective_score": 350, "damage_done": 2700, "elo_base": -60, "elo_delta": -64, "elo_bonus": -4},
-        {"name": "ECODOT",        "score": 2110, "kills": 18, "deaths": 42, "objective_score": 230, "damage_done": 2200, "elo_base": -62, "elo_delta": -78, "elo_bonus": -16},
+        {"name": "BananaRunnerA", "score": 6340, "kills": 51, "deaths": 41, "objective_score": 770,  "damage_done": 5159, "elo_base": -43, "elo_bonus": 18},
+        {"name": "Vxmpleo",       "score": 6060, "kills": 45, "deaths": 54, "objective_score": 740,  "damage_done": 5512, "elo_base": -58, "elo_bonus": 4},
+        {"name": "Allphaa",       "score": 5325, "kills": 38, "deaths": 45, "objective_score": 1060, "damage_done": 4726, "elo_base": -67, "elo_bonus": -3},
+        {"name": "Beefguy_",      "score": 4615, "kills": 38, "deaths": 41, "objective_score": 630,  "damage_done": 5087, "elo_base": -76, "elo_bonus": -14},
     ]
+    clans = {
+        "tjwysk": "Arae",        # verified clan -> gold tag, verified player -> check
+        "opp_reality": "Fame",   # verified clan -> gold, verified player
+        "lvpez": "KPD",          # verified clan -> gold, but player NOT verified (no check)
+        "bananarunnera": "TRGT", # regular clan -> grey, verified player
+        "vxmpleo": "Hovi",       # regular clan -> grey, not verified
+        "allphaa": "VEIL",       # regular clan -> grey, verified player
+        # Lunarz + Beefguy_ are clanless
+    }
+    verified = {"tjwysk", "opp_reality", "bananarunnera", "allphaa", "lunarz"}  # lunarz is clanless+verified
     buf = draw_scoreboard(
         tournament_name="Competitive Krunker League",
-        map_name="Sandstorm",
-        team1_name="AraffyWappy",
+        map_name="Undergrowth",
+        team1_name="opp_reality",
         team1_score=2,
         team1_players=t1,
         team1_color=RED,
-        team2_name="mcyy",
+        team2_name="BananaRunnerA",
         team2_score=0,
         team2_players=t2,
         team2_color=WHITE,
         show_elo=True,
+        clans=clans,
+        verified=verified,
     )
     out_path = os.path.join(os.path.dirname(__file__), "scoreboard_preview.png")
     with open(out_path, "wb") as f:

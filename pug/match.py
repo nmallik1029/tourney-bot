@@ -1102,6 +1102,50 @@ async def _return_players_to_origin(match: dict, bot):
                 pass
 
 
+def _lobby_vc(match: dict, guild):
+    """Find the queue 'lobby' voice channel to send players back to after a game: the VC
+    most of them were pulled from, else a configured queue VC, else one named like it."""
+    from collections import Counter
+    # The VC most players were dragged out of IS the lobby.
+    origins = [o for o in (match.get("origin_vc") or {}).values() if o]
+    if origins:
+        ch = guild.get_channel(Counter(origins).most_common(1)[0][0])
+        if isinstance(ch, discord.VoiceChannel):
+            return ch
+    with guild_context(match["guild_id"]):
+        vid = pug_data["config"].get("queue_vc_id")
+    ch = guild.get_channel(vid) if vid else None
+    if isinstance(ch, discord.VoiceChannel):
+        return ch
+    from pug.config import QUEUE_VC_NAME
+    return discord.utils.get(guild.voice_channels, name=QUEUE_VC_NAME)
+
+
+async def _drag_players_to_lobby(match: dict, bot):
+    """After a game, move everyone still in the match's team/check-in VCs into the queue
+    lobby VC, so deleting the channels never disconnects anyone. Falls back to the old
+    return-to-origin behaviour only if no lobby VC can be found."""
+    guild = bot.get_guild(match["guild_id"])
+    if not guild:
+        return
+    lobby = _lobby_vc(match, guild)
+    if not lobby:
+        await _return_players_to_origin(match, bot)
+        return
+    match_vc_ids = {match.get("checkin_vc_id"), match.get("team1_vc_id"), match.get("team2_vc_id")}
+    match_vc_ids.discard(None)
+    for pid in match.get("players", []):
+        member = guild.get_member(pid)
+        if not member or not member.voice or not member.voice.channel:
+            continue
+        if member.voice.channel.id not in match_vc_ids:
+            continue
+        try:
+            await member.move_to(lobby)
+        except discord.HTTPException:
+            pass
+
+
 async def schedule_teardown(match: dict, bot, embed: discord.Embed | None, delay: int = TEARDOWN_DELAY):
     """Post a teardown notice, then after `delay`s return players to their origin VC
     and delete the match channels."""
@@ -1124,7 +1168,7 @@ async def schedule_teardown(match: dict, bot, embed: discord.Embed | None, delay
 async def _teardown_after(match: dict, bot, delay: int):
     try:
         await asyncio.sleep(delay)
-        await _return_players_to_origin(match, bot)
+        await _drag_players_to_lobby(match, bot)
         await _cleanup_channels(match, bot)
     finally:
         pug_matches.pop(match["key"], None)
