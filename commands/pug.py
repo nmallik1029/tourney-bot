@@ -414,7 +414,7 @@ async def elo_reset(interaction: discord.Interaction, user: discord.Member = Non
     )
 
 
-class ConfirmResetView(discord.ui.View):
+class ConfirmResetView(GuildView):
     def __init__(self, author_id: int):
         super().__init__(timeout=30)
         self.author_id = author_id
@@ -505,7 +505,7 @@ async def pug_reset_stats(interaction: discord.Interaction, user: discord.Member
     )
 
 
-class ConfirmFullStatsResetView(discord.ui.View):
+class ConfirmFullStatsResetView(GuildView):
     def __init__(self, author_id: int):
         super().__init__(timeout=30)
         self.author_id = author_id

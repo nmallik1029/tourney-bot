@@ -62,7 +62,7 @@ def _decode(payload):
 
 
 async def _fetch_profile(ctx, username: str) -> dict:
-    """Load one profile; return {"clan": str, "verified": bool}."""
+    """Load one profile; return {"clan": str, "verified": bool, "_ok": bool}."""
     holder = {"obj": None}
     page = await ctx.new_page()
 
@@ -91,12 +91,15 @@ async def _fetch_profile(ctx, username: str) -> dict:
         except Exception:
             pass
 
-    prof = holder["obj"] or {}
+    if holder["obj"] is None:
+        return {"clan": "", "verified": False, "_ok": False}
+
+    prof = holder["obj"]
     try:
         featured = int(prof.get("player_featured") or 0)
     except (TypeError, ValueError):
         featured = 0
-    return {"clan": (prof.get("player_clan") or "").strip(), "verified": featured > 0}
+    return {"clan": (prof.get("player_clan") or "").strip(), "verified": featured > 0, "_ok": True}
 
 
 async def prefetch_players(usernames: list[str]) -> dict[str, dict]:
@@ -120,7 +123,10 @@ async def prefetch_players(usernames: list[str]) -> dict[str, dict]:
 
                             async def go(u):
                                 async with sem:
-                                    _cache[_key(u)] = (await _fetch_profile(ctx, u), time.time())
+                                    meta = await _fetch_profile(ctx, u)
+                                    ok = meta.pop("_ok", False)
+                                    if ok:
+                                        _cache[_key(u)] = (meta, time.time())
 
                             await asyncio.gather(*(go(u) for u in need))
                         finally:
@@ -128,8 +134,23 @@ async def prefetch_players(usernames: list[str]) -> dict[str, dict]:
                 except Exception as e:
                     print(f"[Krunker] prefetch error (clans skipped): {e}")
 
-    return {_key(u): (cached_meta(u) or {"clan": "", "verified": False})
-            for u in usernames if u and u.strip()}
+                fetched = {u: cached_meta(u) for u in need}
+                ok_count = sum(1 for m in fetched.values() if m is not None)
+                tagged = sum(1 for m in fetched.values() if m and m.get("clan"))
+                checked = sum(1 for m in fetched.values() if m and m.get("verified"))
+                print(
+                    f"[Krunker] prefetch complete: profiles={ok_count}/{len(need)} "
+                    f"clans={tagged} verified={checked}"
+                )
+
+    out = {}
+    for u in usernames:
+        if not u or not u.strip():
+            continue
+        meta = cached_meta(u)
+        if meta is not None:
+            out[_key(u)] = meta
+    return out
 
 
 async def fetch_player(username: str) -> dict:

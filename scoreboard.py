@@ -449,13 +449,13 @@ def _render_scoreboard(
             # Order: [verified check] name [clan]. The check sits in the rank/name gap so
             # names stay column-aligned whether or not a player is verified.
             if is_verified:
-                _draw_check(draw, C_NAME - 25, text_y + 5, 18)
+                _draw_check(draw, C_NAME - 31, text_y + 5, 18)
             disp_name = name[:20] if clan else name[:26]
             put(C_NAME,  disp_name, f_bold, GOLD if mvp else color, bold=mvp)
             if clan:
-                tag_x = C_NAME + draw.textlength(disp_name, font=f_bold) + 10
+                tag_x = C_NAME + draw.textlength(disp_name, font=f_bold) + 12
                 clan_color = GOLD if clan.strip().lower() in VERIFIED_CLANS else GRAY
-                draw.text((tag_x, text_y + 4), f"[{clan}]", font=f_small, fill=clan_color)
+                draw.text((tag_x, text_y), f"[{clan}]", font=f_bold, fill=clan_color)
             put(C_SCORE, str(score), f_reg, WHITE)
             put(C_KILLS, str(kills), f_reg, high_low_fill(kills, min_kills, max_kills))
             put(C_DEATH, str(deaths), f_reg, high_low_fill(deaths, min_deaths, max_deaths, higher_is_better=False))

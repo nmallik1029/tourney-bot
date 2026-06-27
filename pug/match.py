@@ -643,13 +643,31 @@ async def _prefetch_match_clans(match: dict):
     """Best-effort: look up each player's Krunker clan + verified status and stash it on
     the match (keyed by lowercased username) so the result scoreboard can show [CLAN] tags
     and verified checkmarks with no lookup at match-end. Never raises."""
-    try:
-        from services.krunker import prefetch_players
-        names = [primary_username(p, "") for p in match.get("players", [])]
-        meta = await prefetch_players([n for n in names if n])
-        match.setdefault("clan_meta", {}).update(meta)
-    except Exception as e:
-        print(f"[Krunker] match clan prefetch failed: {e}")
+    from services.krunker import prefetch_players
+
+    while not match.get("finalized") and match.get("phase") != "done":
+        try:
+            names = [primary_username(p, "") for p in match.get("players", []) if primary_username(p, "")]
+            have = match.setdefault("clan_meta", {})
+            missing = [n for n in names if n.strip().lower() not in have]
+            if not missing:
+                return
+
+            meta = await prefetch_players(missing)
+            have.update(meta)
+
+            still_missing = [n for n in names if n.strip().lower() not in have]
+            if not still_missing:
+                return
+
+            print(
+                f"[Krunker] match clan prefetch partial for {match.get('name')}: "
+                f"profiles={len(names) - len(still_missing)}/{len(names)}"
+            )
+        except Exception as e:
+            print(f"[Krunker] match clan prefetch failed: {e}")
+
+        await asyncio.sleep(45)
 
 
 async def start_draft(match: dict, bot):
@@ -659,7 +677,7 @@ async def start_draft(match: dict, bot):
 
     # The draft is a multi-minute window -- kick off clan lookups now (in the background)
     # so the result scoreboard has clan tags ready without any lookup at match-end.
-    asyncio.create_task(_prefetch_match_clans(match))
+    match["clan_task"] = asyncio.create_task(_prefetch_match_clans(match))
 
     # Remove the now-stale check-in message (otherwise the last checked-in player still
     # shows as "waiting" while the draft starts).
@@ -1405,6 +1423,33 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
         if did is not None:
             record_stat_snapshot(did)
     save_pug_data()
+
+    # Give the draft-time lookup a short chance to finish, then fetch any payload names
+    # still missing. The webhook was already ACKed, so this can wait without making
+    # Krunker retry the result.
+    try:
+        task = match.get("clan_task")
+        if task and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=8)
+            except asyncio.TimeoutError:
+                pass
+
+        payload_names = [p.get("name", "") for p in players if p.get("name")]
+        have = match.setdefault("clan_meta", {})
+        missing = [n for n in payload_names if n.strip().lower() not in have]
+        if missing:
+            from services.krunker import prefetch_players
+            have.update(await prefetch_players(missing))
+
+        clans_found = sum(1 for m in have.values() if m.get("clan"))
+        verified_found = sum(1 for m in have.values() if m.get("verified"))
+        print(
+            f"[Krunker] match metadata for {match.get('name')}: "
+            f"players={len(payload_names)} clans={clans_found} verified={verified_found}"
+        )
+    except Exception as e:
+        print(f"[Krunker] match-end clan lookup failed (scoreboard will omit tags): {e}")
 
     # Build scoreboard image
     image_file = None
