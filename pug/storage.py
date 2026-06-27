@@ -452,9 +452,12 @@ def record_stat_snapshot(discord_id: int):
 
 
 def get_stat_series(discord_id: int, stat_key: str) -> list[tuple[float, float]]:
-    """Return [(timestamp, value), ...] for one stat from a player's snapshot history."""
+    """Return [(timestamp, value), ...] for one stat from a player's snapshot history.
+    Snapshots whose value was blanked to None (e.g. by an ELO reset) are skipped, so a
+    reset stat's graph starts empty instead of reading back as a flat zero line."""
     p = get_player(discord_id)
-    return [(s.get("ts", 0.0), s.get(stat_key, 0.0)) for s in p.get("stat_history", [])]
+    return [(s.get("ts", 0.0), s.get(stat_key))
+            for s in p.get("stat_history", []) if s.get(stat_key) is not None]
 
 
 def record_match_stats(discord_id: int, kills: int, deaths: int, obj: int, dmg: int, rounds: int = 2):
@@ -623,12 +626,30 @@ def set_elo(discord_id: int, elo: int):
     save_pug_data()
 
 
-def reset_player(discord_id: int):
-    """Reset a single player's ELO to the start value and clear their W/L."""
-    p = get_player(discord_id)
+def _reset_elo_record(p: dict):
+    """Reset a player's ELO, W/L, and average CKL rating -- and the graphs that back them
+    (the ELO history, plus the win-rate and rating points in the per-game trend) -- while
+    leaving K/D and OBJ (both the numbers and their trend graphs) untouched.
+
+    The win-rate/rating/K/D/OBJ graphs all read from the one `stat_history` list, so we
+    can't just clear it. Instead we blank only the `wr` and `rating` value on each past
+    snapshot (None = "no data here"); the graph readers skip None points, so those two
+    trends reset to empty while K/D and OBJ keep their history."""
     p["elo"] = ELO_START
     p["wins"] = 0
     p["losses"] = 0
+    p["peak_elo"] = ELO_START
+    p["elo_history"] = []
+    p["rating_sum"] = 0.0
+    p["rating_games"] = 0
+    for snap in p.get("stat_history", []):
+        snap["wr"] = None
+        snap["rating"] = None
+
+
+def reset_player(discord_id: int):
+    """Reset a single player's ELO, W/L, and CKL rating (and their graphs)."""
+    _reset_elo_record(get_player(discord_id))
     save_pug_data()
 
 
@@ -641,11 +662,9 @@ def reset_profile(discord_id: int):
 
 
 def reset_elo_all():
-    """Reset ELO + W/L for every player."""
+    """Reset ELO, W/L, and CKL rating (and their graphs) for every player."""
     for p in pug_data["players"].values():
-        p["elo"] = ELO_START
-        p["wins"] = 0
-        p["losses"] = 0
+        _reset_elo_record(p)
     save_pug_data()
 
 

@@ -391,7 +391,7 @@ async def elo_set(interaction: discord.Interaction, user: discord.Member, elo: i
 
 @bot.tree.command(
     name="elo-reset",
-    description="Reset ELO to 1000 for one player, or everyone if no user is given.",
+    description="Reset ELO, W/L, and CKL rating (and their graphs) for one player or everyone.",
 )
 @is_pug_staff()
 @app_commands.describe(user="Player to reset (leave blank to reset EVERYONE)")
@@ -399,7 +399,8 @@ async def elo_reset(interaction: discord.Interaction, user: discord.Member = Non
     if user:
         reset_player(user.id)
         await interaction.response.send_message(
-            f"Reset {user.mention}'s ELO to **{ELO_START}** and cleared their W/L.",
+            f"Reset {user.mention}'s ELO to **{ELO_START}** and cleared their W/L, average "
+            f"CKL rating, and their ELO/W-L/rating graphs. K/D and OBJ are untouched.",
             ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
         )
         return
@@ -407,7 +408,8 @@ async def elo_reset(interaction: discord.Interaction, user: discord.Member = Non
     # Global reset is destructive, require an explicit confirmation click.
     count = len(pug_data["players"])
     await interaction.response.send_message(
-        f"⚠️ This will reset **ELO + W/L for all {count} players** to {ELO_START}. "
+        f"⚠️ This will reset **ELO, W/L, and CKL rating for all {count} players** to "
+        f"{ELO_START}, and clear their ELO/W-L/rating graphs (K/D and OBJ are kept). "
         f"This cannot be undone.",
         view=ConfirmResetView(interaction.user.id),
         ephemeral=True,
@@ -428,7 +430,9 @@ class ConfirmResetView(GuildView):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
-            content=f"Reset **everyone's** ELO to **{ELO_START}** and cleared all W/L.", view=self
+            content=f"Reset **everyone's** ELO to **{ELO_START}** and cleared all W/L, "
+            f"average CKL ratings, and the ELO/W-L/rating graphs. K/D and OBJ kept.",
+            view=self,
         )
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -684,7 +688,10 @@ def _rank_points(p: dict, stat_key: str) -> list:
     if stat_key == "elo":
         eh = list(p.get("elo_history") or [])
         return [(str(i + 1), v) for i, v in enumerate(eh)]
-    series = [(s.get("ts", 0.0), s.get(stat_key, 0.0)) for s in p.get("stat_history", [])]
+    # Skip snapshots whose value was blanked to None (e.g. an ELO reset clears the
+    # win-rate and rating points) so a reset stat's trend starts empty, not flat at zero.
+    series = [(s.get("ts", 0.0), s.get(stat_key))
+              for s in p.get("stat_history", []) if s.get(stat_key) is not None]
     return aggregate_series(series)
 
 
