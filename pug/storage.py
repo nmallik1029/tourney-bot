@@ -150,6 +150,60 @@ def save_pug_data():
             print(f"[PugStorage] Failed to save to Gist: {e}")
 
 
+# ── Krunker clan/verified cache (persisted) ──────────────────────────────────────
+# Clan lookups go through a residential proxy (metered bandwidth), so we persist the
+# results to the same Gist in their own file. That way a Railway redeploy doesn't wipe
+# the cache and force a full re-fetch of every player (which would burn proxy data).
+CLAN_CACHE_FILE = Path("clan_cache.json")
+
+
+def load_clan_cache() -> dict:
+    """Load the persisted clan/verified cache ({username_lower: {clan, verified, ts}}) from
+    the Gist, falling back to a local file. Best-effort -> {} on any failure."""
+    if GIST_TOKEN and GIST_ID:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"https://api.github.com/gists/{GIST_ID}", headers=_gist_headers())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                files = json.loads(resp.read().decode()).get("files", {})
+                if "clan_cache.json" in files:
+                    return json.loads(files["clan_cache.json"]["content"])
+        except Exception as e:
+            print(f"[PugStorage] Failed to load clan cache from Gist: {e}")
+    if CLAN_CACHE_FILE.exists():
+        try:
+            with open(CLAN_CACHE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[PugStorage] Failed to load clan_cache.json: {e}")
+    return {}
+
+
+def save_clan_cache(cache: dict):
+    """Persist the clan/verified cache to the Gist (+ a local file). Best-effort."""
+    try:
+        data_str = json.dumps(cache, indent=2, default=str)
+    except Exception:
+        return
+    try:
+        with open(CLAN_CACHE_FILE, "w") as f:
+            f.write(data_str)
+    except Exception:
+        pass
+    if GIST_TOKEN and GIST_ID:
+        try:
+            import urllib.request
+            payload = json.dumps({"files": {"clan_cache.json": {"content": data_str}}}).encode()
+            req = urllib.request.Request(
+                f"https://api.github.com/gists/{GIST_ID}", data=payload,
+                headers={**_gist_headers(), "Content-Type": "application/json"}, method="PATCH")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                pass
+        except Exception as e:
+            print(f"[PugStorage] Failed to save clan cache to Gist: {e}")
+
+
 # ── Multi-guild state ────────────────────────────────────────────────────────────
 # Persisted, keyed by guild id (str). In-memory live state is keyed by guild id (int).
 pug_store: dict[str, dict] = load_pug_store()

@@ -642,10 +642,17 @@ async def dissolve_match(match: dict, bot, reason: str = ""):
 async def _prefetch_match_clans(match: dict):
     """Best-effort: look up each player's Krunker clan + verified status and stash it on
     the match (keyed by lowercased username) so the result scoreboard can show [CLAN] tags
-    and verified checkmarks with no lookup at match-end. Never raises."""
+    and verified checkmarks with no lookup at match-end. Never raises.
+
+    Gives up after a few sweeps so it doesn't relaunch Chromium every 45s for the whole
+    match when the host can't actually reach Krunker's profile data (e.g. a datacenter IP
+    that Krunker's anti-bot silently blocks -- the scoreboard just omits tags in that case)."""
     from services.krunker import prefetch_players
 
-    while not match.get("finalized") and match.get("phase") != "done":
+    MAX_SWEEPS = 4
+    for sweep in range(1, MAX_SWEEPS + 1):
+        if match.get("finalized") or match.get("phase") == "done":
+            return
         try:
             names = [primary_username(p, "") for p in match.get("players", []) if primary_username(p, "")]
             have = match.setdefault("clan_meta", {})
@@ -662,12 +669,16 @@ async def _prefetch_match_clans(match: dict):
 
             print(
                 f"[Krunker] match clan prefetch partial for {match.get('name')}: "
-                f"profiles={len(names) - len(still_missing)}/{len(names)}"
+                f"profiles={len(names) - len(still_missing)}/{len(names)} (sweep {sweep}/{MAX_SWEEPS})"
             )
         except Exception as e:
             print(f"[Krunker] match clan prefetch failed: {e}")
 
-        await asyncio.sleep(45)
+        if sweep < MAX_SWEEPS and not match.get("finalized") and match.get("phase") != "done":
+            await asyncio.sleep(45)
+
+    print(f"[Krunker] clan prefetch for {match.get('name')} gave up after {MAX_SWEEPS} sweeps "
+          f"(Krunker profile data unreachable from this host).")
 
 
 async def start_draft(match: dict, bot):
@@ -1424,32 +1435,29 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
             record_stat_snapshot(did)
     save_pug_data()
 
-    # Give the draft-time lookup a short chance to finish, then fetch any payload names
-    # still missing. The webhook was already ACKed, so this can wait without making
-    # Krunker retry the result.
+    # Clan tags are gathered in the background during the draft. At match-end we ONLY read
+    # what's already cached -- we never launch a browser or await a lookup here, so a slow or
+    # failing clan fetch can't delay posting the result or tearing the match down. (Blocking
+    # here was making finalize hang ~1-2 min, so admins force-won thinking it had broken.)
     try:
-        task = match.get("clan_task")
-        if task and not task.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=8)
-            except asyncio.TimeoutError:
-                pass
-
+        from services.krunker import cached_meta
         payload_names = [p.get("name", "") for p in players if p.get("name")]
         have = match.setdefault("clan_meta", {})
-        missing = [n for n in payload_names if n.strip().lower() not in have]
-        if missing:
-            from services.krunker import prefetch_players
-            have.update(await prefetch_players(missing))
+        for n in payload_names:
+            key = n.strip().lower()
+            if key and key not in have:
+                m = cached_meta(n)
+                if m is not None:
+                    have[key] = m
 
         clans_found = sum(1 for m in have.values() if m.get("clan"))
         verified_found = sum(1 for m in have.values() if m.get("verified"))
         print(
             f"[Krunker] match metadata for {match.get('name')}: "
-            f"players={len(payload_names)} clans={clans_found} verified={verified_found}"
+            f"players={len(payload_names)} clans={clans_found} verified={verified_found} (cached only)"
         )
     except Exception as e:
-        print(f"[Krunker] match-end clan lookup failed (scoreboard will omit tags): {e}")
+        print(f"[Krunker] match-end clan read failed (scoreboard will omit tags): {e}")
 
     # Build scoreboard image
     image_file = None
