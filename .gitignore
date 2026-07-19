@@ -9,3 +9,5 @@ __pycache__/
 .claude/
 scoreboard_preview.png
 test_clan.py
+test_proxy.py
+clan_cache.json

@@ -681,6 +681,115 @@ async def _prefetch_match_clans(match: dict):
           f"(Krunker profile data unreachable from this host).")
 
 
+# draft chat lock
+#
+# During the draft the text channel is read-only: since everyone's already in VC, players
+# don't need to type. Staff (server admins + the pug staff roles) may talk throughout, and
+# the captain who's currently on the clock is temporarily granted send so they can comment
+# while picking. When the draft finishes, everyone is unlocked again.
+def _is_draft_exempt(member: discord.Member, guild: discord.Guild) -> bool:
+    """True for members who may talk for the whole draft: server admins + pug staff roles.
+    (Those roles already carry a role-level send overwrite; we simply never lock them.)"""
+    if member.guild_permissions.administrator:
+        return True
+    from core.guild_config import pug_admin_role_id, pug_helper_role_id
+    staff_ids = {pug_admin_role_id(guild.id), pug_helper_role_id(guild.id)}
+    return any(r.id in staff_ids for r in member.roles)
+
+
+async def _set_send(ch, target, allow: bool):
+    """Flip ONLY send_messages on target's existing overwrite, preserving view_channel etc.
+    (Replacing the whole overwrite would drop the player's view_channel=True and hide the
+    channel, since @everyone is view=False here.)"""
+    ow = ch.overwrites_for(target)
+    ow.update(send_messages=allow)
+    await ch.set_permissions(target, overwrite=ow, reason="PUG draft chat lock")
+
+
+def _spectator_role(guild: discord.Guild):
+    from core.guild_config import pug_spectator_role_id
+    sid = pug_spectator_role_id(guild.id)
+    return guild.get_role(sid) if sid else None
+
+
+async def lock_draft_channel(match: dict, guild: discord.Guild):
+    """Make the draft channel read-only: silence every player + the spectator role, then
+    grant the on-clock captain send. Staff are left untouched (they stay able to talk)."""
+    ch = guild.get_channel(match["text_channel_id"]) if guild else None
+    if not ch:
+        return
+    from views.pug_draft import _current_captain
+    cur = _current_captain(match)
+    sim = match.get("sim_controller")
+    for pid in match["players"]:
+        # Never lock the /simulate controller -- they're driving the whole test and act as
+        # both captains via buttons; silencing them would be nonsensical.
+        if pid == sim:
+            continue
+        member = guild.get_member(pid)
+        if not member or _is_draft_exempt(member, guild):
+            continue
+        try:
+            await _set_send(ch, member, pid == cur)
+        except Exception as e:
+            print(f"[Draft] lock failed for {pid}: {e}")
+    role = _spectator_role(guild)
+    if role:
+        try:
+            await _set_send(ch, role, False)
+        except Exception as e:
+            print(f"[Draft] lock failed for spectator role: {e}")
+    match["draft_talker"] = cur
+
+
+async def update_draft_talker(match: dict, guild: discord.Guild):
+    """On a turn change, revoke the previous captain's send and grant the new one's --
+    only touches the (up to) two affected members. No-op if the same captain is still up
+    (snake drafts give a captain two picks in a row)."""
+    ch = guild.get_channel(match["text_channel_id"]) if guild else None
+    if not ch:
+        return
+    from views.pug_draft import _current_captain
+    cur = _current_captain(match)
+    prev = match.get("draft_talker")
+    if prev == cur:
+        return
+    sim = match.get("sim_controller")
+    for pid, allow in ((prev, False), (cur, True)):
+        if pid is None or pid == sim:
+            continue
+        member = guild.get_member(pid)
+        if not member or _is_draft_exempt(member, guild):
+            continue
+        try:
+            await _set_send(ch, member, allow)
+        except Exception as e:
+            print(f"[Draft] talker update failed for {pid}: {e}")
+    match["draft_talker"] = cur
+
+
+async def unlock_draft_channel(match: dict, guild: discord.Guild):
+    """Draft over: restore send for every player + the spectator role."""
+    ch = guild.get_channel(match["text_channel_id"]) if guild else None
+    if not ch:
+        return
+    for pid in match["players"]:
+        member = guild.get_member(pid)
+        if not member:
+            continue
+        try:
+            await _set_send(ch, member, True)
+        except Exception as e:
+            print(f"[Draft] unlock failed for {pid}: {e}")
+    role = _spectator_role(guild)
+    if role:
+        try:
+            await _set_send(ch, role, True)
+        except Exception as e:
+            print(f"[Draft] unlock failed for spectator role: {e}")
+    match["draft_talker"] = None
+
+
 async def start_draft(match: dict, bot):
     if match["phase"] != "checkin":
         return
@@ -741,6 +850,9 @@ async def start_draft(match: dict, bot):
         allowed_mentions=discord.AllowedMentions(users=True),
     )
     match["draft_message_id"] = msg.id
+
+    # Lock the channel to read-only for the draft (on-clock captain + staff excepted).
+    await lock_draft_channel(match, guild_for_roles)
 
 
 # draft auto-pick timer
@@ -882,10 +994,18 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
         "teamSize": f"{max(n1, n2)}v{max(n1, n2)}",
         "team1Players": ", ".join(_team_usernames(match, cap1, guild)),
         "team2Players": ", ".join(_team_usernames(match, cap2, guild)),
-        "region": match.get("region_code", SET_REGION).lower(),
+        # NOTE: do NOT send "region" here. Krunker's comp-server allocation hangs on
+        # "Pending" and bounces back to setup when BOTH a forced region AND a webhook are
+        # present in the host URL. Either alone works; together they don't. The webhook is
+        # required (it's how results come back), so region is omitted -- the game hosts on
+        # the host's own default Krunker region, and region correctness is enforced after
+        # the fact when the host posts the link (see events/pug_listeners.py).
         "webhook": WEBHOOK_URL,
     }
-    query = urllib.parse.urlencode(params)
+    # Krunker expects spaces as %20 (quote), not the form-style "+" (quote_plus). The
+    # KE bot's links use %20 and host instantly; matching that avoids a mangled player
+    # list on the client side.
+    query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"{RAILWAY_BASE}/launch?client={client}&{query}"
 
 

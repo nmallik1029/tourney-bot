@@ -123,13 +123,16 @@ async def render_after_pick(match: dict, bot, complete: bool):
         except discord.NotFound:
             pass
 
+    guild = bot.get_guild(match["guild_id"])
     if complete:
         if msg:
             await msg.edit(embed=build_draft_embed(match), view=None)
-        from pug.match import start_map_vote
+        from pug.match import start_map_vote, unlock_draft_channel
+        await unlock_draft_channel(match, guild)  # draft over -> everyone can talk again
         await start_map_vote(match, bot)
     else:
-        from pug.match import start_draft_timer
+        from pug.match import start_draft_timer, update_draft_talker
+        await update_draft_talker(match, guild)  # hand the mic to the next on-clock captain
         start_draft_timer(match, bot)
         view = PugDraftView(match["key"])
         view.rebuild()

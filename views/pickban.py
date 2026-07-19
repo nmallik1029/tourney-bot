@@ -3,7 +3,7 @@ import uuid
 import urllib.parse
 import discord
 from core.bot_instance import bot
-from core.config import MAPS, RAILWAY_BASE, SERVER_ID, ROLE_ID, SET_REGION, SET_REGION_NAME
+from core.config import MAPS, RAILWAY_BASE, SERVER_ID, ROLE_ID, SET_REGION_NAME
 from core.storage import tournaments, active_matches
 
 MAP_IDS = {
@@ -289,10 +289,13 @@ class HostMapButton(discord.ui.Button):
             "team1Name": team1,
             "team2Name": team2,
             "teamSize": team_size,
-            "region": SET_REGION.lower(),
+            # No "region": a forced region + webhook together make Krunker's comp-server
+            # allocation hang on "Pending" and fail. Webhook is required for results, so
+            # region is dropped; the host's default Krunker region is used and the region
+            # check on the posted link (events/messages.py) enforces correctness.
             "webhook": WEBHOOK_URL,
         }
-        query = urllib.parse.urlencode(params)
+        query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
         glorp_url = f"{RAILWAY_BASE}/launch?client=glorp&{query}"
         crankshaft_url = f"{RAILWAY_BASE}/launch?client=crankshaft&{query}"
 

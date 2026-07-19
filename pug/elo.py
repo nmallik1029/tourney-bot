@@ -3,6 +3,11 @@ from pug.storage import get_player, save_pug_data
 ELO_MIN_WIN_CHANGE = 1
 ELO_MIN_LOSS_CHANGE = 1
 ELO_MAX_CHANGE = 100
+# How much of a favored player's "extra" loss (the part beyond an even-match loss) to keep.
+# Standard Elo makes a high-rated player drop ~ELO_MAX_CHANGE*exp on a loss, which is brutal
+# when they're heavily favored. 0.5 halves that excess so high-Elo losses sting less; 1.0
+# would be standard Elo, 0.0 would cap every favored loss at the even-match value.
+ELO_FAVORED_LOSS_KEEP = 0.5
 ELO_PERFORMANCE_MAX_ADJUST = 30
 ELO_RATING_EXPECTATION_STEP = 250.0
 ELO_PERFORMANCE_POSITIVE_MULTIPLIER = 12.0
@@ -30,7 +35,14 @@ def _base_result_delta(pid: int, opponent_avg: float, won: bool) -> int:
     exp = expected(get_player(pid)["elo"], opponent_avg)
     if won:
         return _clamp(round(ELO_MAX_CHANGE * (1.0 - exp)), ELO_MIN_WIN_CHANGE, ELO_MAX_CHANGE)
-    return -_clamp(round(ELO_MAX_CHANGE * exp), ELO_MIN_LOSS_CHANGE, ELO_MAX_CHANGE)
+    # Standard Elo loss is ELO_MAX_CHANGE * exp. For a favored player (exp > 0.5) we soften
+    # only the "extra" loss above an even-match loss, so being highly rated no longer means a
+    # near-full drop when you lose. Underdog losses (exp <= 0.5) are left untouched.
+    loss = ELO_MAX_CHANGE * exp
+    even = ELO_MAX_CHANGE * 0.5
+    if loss > even:
+        loss = even + (loss - even) * ELO_FAVORED_LOSS_KEEP
+    return -_clamp(round(loss), ELO_MIN_LOSS_CHANGE, ELO_MAX_CHANGE)
 
 
 def _performance_adjustments(

@@ -30,8 +30,11 @@ except Exception:  # pragma: no cover
 #   3600  = hourly (fresher, ~24x the proxy bandwidth)
 #   0     = look up every player every game (freshest, most bandwidth)
 CACHE_TTL = 86400
-_LOOKUP_TIMEOUT = 22
-_CONCURRENCY = 3
+# Residential proxies add a lot of latency vs a home connection, so give each lookup more
+# room and run fewer at once (too many parallel tunnels => the proxy drops connections,
+# which shows up as net::ERR_CONNECTION_CLOSED).
+_LOOKUP_TIMEOUT = 45
+_CONCURRENCY = 2
 
 # Resource types the profile lookup doesn't need: the clan/verified data arrives over a
 # WebSocket once the page's JS runs, so we abort images/fonts/CSS/media before they download.
@@ -147,22 +150,27 @@ def _decode(payload):
 
 async def _fetch_profile(ctx, username: str) -> dict:
     """Load one profile; return {"clan": str, "verified": bool, "_ok": bool}."""
-    holder = {"obj": None}
+    holder = {"obj": None, "err": None}
     page = await ctx.new_page()
 
     def on_ws(ws):
         def on_frame(payload):
             data = _decode(payload)
-            if isinstance(data, list) and len(data) >= 4 and data[1] == "profile" \
-                    and isinstance(data[3], dict):
+            if not isinstance(data, list) or len(data) < 2:
+                return
+            if data[1] == "profile" and len(data) >= 4 and isinstance(data[3], dict):
                 holder["obj"] = data[3]
+            elif data[0] == "error" or "Connection Failed" in str(data):
+                # Anti-bot rejection (e.g. ["error","Connection Failed"]) -- capture it so the
+                # log distinguishes "blocked" from "just timed out".
+                holder["err"] = data
         ws.on("framereceived", on_frame)
 
     page.on("websocket", on_ws)
     try:
         await page.goto(
             f"https://krunker.io/social.html?p=profile&q={username}",
-            wait_until="domcontentloaded", timeout=25000,
+            wait_until="domcontentloaded", timeout=35000,
         )
         deadline = time.time() + _LOOKUP_TIMEOUT
         while holder["obj"] is None and time.time() < deadline:
@@ -176,6 +184,8 @@ async def _fetch_profile(ctx, username: str) -> dict:
             pass
 
     if holder["obj"] is None:
+        if holder["err"] is not None:
+            print(f"[Krunker] {username}: blocked by anti-bot -> {str(holder['err'])[:120]}")
         return {"clan": "", "verified": False, "_ok": False}
 
     prof = holder["obj"]

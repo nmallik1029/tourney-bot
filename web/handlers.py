@@ -427,7 +427,10 @@ async def _process_webhook(payload: dict):
 async def handle_launch(request: web.Request) -> web.Response:
     client = request.query.get("client", "glorp")
     params = {k: v for k, v in request.query.items() if k != "client"}
-    query = urllib.parse.urlencode(params)
+    # Re-encode with quote (spaces -> %20), not quote_plus (spaces -> +). aiohttp already
+    # decoded the incoming query, so without this the "+" would come back here and reach
+    # the client in the glorp:// URL, mangling the player list.
+    query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     if client == "crankshaft":
         target_url = f"crankshaft://game?{query}"
     else:

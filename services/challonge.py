@@ -134,6 +134,16 @@ def _flatten(item: dict) -> dict:
             rid = _relationship_id(item, *names)
             if rid is not None:
                 out[target] = rid
+    # v2.1 match resources don't expose player1_id/player2_id as attributes or
+    # relationships; the two participants show up (ordered player1, player2) in
+    # `points_by_participant`. Fall back to that so callers reading player1_id/
+    # player2_id keep working. participant_id is null for not-yet-decided matches.
+    pbp = out.get("points_by_participant")
+    if isinstance(pbp, list):
+        if out.get("player1_id") is None and len(pbp) >= 1 and isinstance(pbp[0], dict):
+            out["player1_id"] = pbp[0].get("participant_id")
+        if out.get("player2_id") is None and len(pbp) >= 2 and isinstance(pbp[1], dict):
+            out["player2_id"] = pbp[1].get("participant_id")
     for k in ("player1_id", "player2_id", "winner_id", "loser_id"):
         if out.get(k) is not None:
             out[k] = str(out[k])
