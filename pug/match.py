@@ -381,9 +381,14 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
 SIM_FAKE_BASE = 900_000_000
 
 
-async def start_simulation(guild: discord.Guild, bot, controller_id: int):
-    """Spin up a full 4v4 match with 7 fake players + the controller, auto-checked-in,
-    skipping the check-in phase. The controller can act as either captain."""
+async def start_simulation(guild: discord.Guild, bot, controller_id: int, second_captain_id: int | None = None):
+    """Spin up a full 4v4 match with fake players + the controller, auto-checked-in,
+    skipping the check-in phase. The controller can act as either captain.
+
+    If second_captain_id is given, that real member takes a player slot and is forced to be
+    the second captain (the controller is the other). That lets the draft chat-lock be
+    tested with an actual player -- one who, unlike the exempt controller, does get muted
+    off-turn and unmuted on their turn."""
     # Tear down any previous sim by this controller
     for key, m in list(pug_matches.items()):
         if m.get("sim_controller") == controller_id:
@@ -391,8 +396,15 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int):
             pug_matches.pop(key, None)
     sim_players.clear()
 
+    controller = guild.get_member(controller_id)
+    second = guild.get_member(second_captain_id) if second_captain_id else None
+    if second and second.id == controller_id:
+        second = None  # can't co-captain with yourself
+
+    # Real slots (controller [+ optional real 2nd captain]); fakes fill the rest up to 8.
+    real_players = [controller_id] + ([second.id] if second else [])
     fake_ids = []
-    for i in range(1, 8):
+    for i in range(1, 9 - len(real_players)):
         fid = SIM_FAKE_BASE + i
         sim_players[fid] = {
             "elo": random.randint(800, 1400),
@@ -402,7 +414,7 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int):
         }
         fake_ids.append(fid)
 
-    players = [controller_id] + fake_ids
+    players = real_players + fake_ids
     number = next_queue_number()
     name = f"sim-{number:04d}"
 
@@ -417,11 +429,14 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int):
         everyone: discord.PermissionOverwrite(view_channel=True, connect=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, connect=True),
     }
-    controller = guild.get_member(controller_id)
     names = {controller_id: primary_username(controller_id, controller.display_name if controller else str(controller_id))}
     if controller:
         text_overwrites[controller] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
         vc_overwrites[controller] = discord.PermissionOverwrite(view_channel=True, connect=True)
+    if second:
+        names[second.id] = primary_username(second.id, second.display_name)
+        text_overwrites[second] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        vc_overwrites[second] = discord.PermissionOverwrite(view_channel=True, connect=True)
     for i, fid in enumerate(fake_ids, start=1):
         names[fid] = f"Bot{i}"
 
@@ -460,6 +475,8 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int):
         "host_button_used": False,
         "host_message_id": None,
         "sim_controller": controller_id,
+        # Force these two as captains (used only when a real 2nd captain is supplied).
+        "sim_captains": [controller_id, second.id] if second else None,
     }
     pug_matches[name] = match
 
@@ -825,7 +842,13 @@ async def start_draft(match: dict, bot):
     ordered = match["players"][:]
     random.shuffle(ordered)
     ordered.sort(key=lambda p: (_has_priority(p), get_elo(p)), reverse=True)
-    captains = ordered[:2]
+    # /simulate can force the two captains (e.g. the controller + a real member) so the
+    # chat-lock can be tested with an actual player. Otherwise pick the top two normally.
+    forced = match.get("sim_captains")
+    if forced and len(forced) == 2 and all(f in match["players"] for f in forced):
+        captains = list(forced)
+    else:
+        captains = ordered[:2]
     match["captains"] = captains
     match["teams"] = {captains[0]: [captains[0]], captains[1]: [captains[1]]}
     match["pool"] = [p for p in ordered if p not in captains]

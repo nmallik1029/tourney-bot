@@ -322,14 +322,28 @@ async def check(interaction: discord.Interaction, user: discord.Member):
     description="Simulate a draft with fake players (you control both captains). Testing only.",
 )
 @is_pug_staff()
-@app_commands.describe(format="Match format to simulate")
+@app_commands.describe(
+    format="Match format to simulate",
+    captain="Optional: a real member forced as the 2nd captain (to test the draft chat-lock with a real player)",
+)
 @app_commands.choices(format=[app_commands.Choice(name="4v4", value="4v4")])
-async def simulate(interaction: discord.Interaction, format: app_commands.Choice[str]):
+async def simulate(
+    interaction: discord.Interaction,
+    format: app_commands.Choice[str],
+    captain: discord.Member = None,
+):
     await interaction.response.defer(ephemeral=True)
     from pug.match import start_simulation
-    match = await start_simulation(interaction.guild, interaction.client, interaction.user.id)
+    match = await start_simulation(
+        interaction.guild, interaction.client, interaction.user.id,
+        second_captain_id=captain.id if captain else None,
+    )
+    if captain and captain.id != interaction.user.id:
+        note = f" You are one captain, {captain.mention} is the other."
+    else:
+        note = " You control both captains."
     await interaction.followup.send(
-        f"Simulation started in <#{match['text_channel_id']}>, you control both captains.",
+        f"Simulation started in <#{match['text_channel_id']}>.{note}",
         ephemeral=True,
     )
 
