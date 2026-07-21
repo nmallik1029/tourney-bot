@@ -242,7 +242,7 @@ class MapActionButton(discord.ui.Button):
 
 
 class HostClientView(discord.ui.View):
-    def __init__(self, glorp_url: str, crankshaft_url: str):
+    def __init__(self, glorp_url: str, crankshaft_url: str, kcc_url: str):
         super().__init__(timeout=60)
         self.add_item(discord.ui.Button(
             label="Open in Glorp",
@@ -253,6 +253,11 @@ class HostClientView(discord.ui.View):
             label="Open in CrankShaft",
             style=discord.ButtonStyle.link,
             url=crankshaft_url,
+        ))
+        self.add_item(discord.ui.Button(
+            label="Open in Krunker Civilian Client",
+            style=discord.ButtonStyle.link,
+            url=kcc_url,
         ))
 
 
@@ -298,8 +303,9 @@ class HostMapButton(discord.ui.Button):
         query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
         glorp_url = f"{RAILWAY_BASE}/launch?client=glorp&{query}"
         crankshaft_url = f"{RAILWAY_BASE}/launch?client=crankshaft&{query}"
+        kcc_url = f"{RAILWAY_BASE}/launch?client=kcc&{query}"
 
-        view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url)
+        view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url, kcc_url=kcc_url)
         await interaction.response.send_message(
             f"**Hosting Map {self.map_index + 1}: {self.map_name}**\n\n"
             f"1. Click a button below to open your client\n"

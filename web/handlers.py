@@ -433,20 +433,25 @@ async def handle_launch(request: web.Request) -> web.Response:
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     if client == "crankshaft":
         target_url = f"crankshaft://game?{query}"
+    elif client == "kcc":
+        # Krunker Civilian Client registers the kcc:// scheme and parses action=host-comp.
+        target_url = f"kcc://game?{query}"
     else:
         target_url = f"glorp://game?{query}"
+
+    display_name = {"kcc": "Krunker Civilian Client", "crankshaft": "CrankShaft"}.get(client, client.title())
 
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-  <title>Launching {client.title()}...</title>
+  <title>Launching {display_name}...</title>
   <style>
     body {{ font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #1e1f22; color: #fff; }}
     p {{ font-size: 1.2rem; }}
   </style>
 </head>
 <body>
-  <p>Launching {client.title()}... You can close this tab.</p>
+  <p>Launching {display_name}... You can close this tab.</p>
   <script>window.location = "{target_url}";</script>
 </body>
 </html>"""
