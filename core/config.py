@@ -44,6 +44,15 @@ REGION_NAMES = {
 }
 SET_REGION_NAME = os.environ.get("SET_REGION_NAME", "").strip() or REGION_NAMES.get(SET_REGION, SET_REGION)
 
+
+def resolve_region(tournament: dict | None) -> tuple[str, str]:
+    """(code, name) for a tournament's host region. Falls back to the deployment default
+    (SET_REGION) when the tournament has no per-tournament region set, so existing
+    tournaments keep hosting on the configured default with no migration."""
+    code = ((tournament or {}).get("region") or SET_REGION).upper()
+    return code, REGION_NAMES.get(code, code)
+
+
 MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
 
 

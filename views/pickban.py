@@ -3,7 +3,7 @@ import uuid
 import urllib.parse
 import discord
 from core.bot_instance import bot
-from core.config import MAPS, RAILWAY_BASE, SERVER_ID, ROLE_ID, SET_REGION_NAME
+from core.config import MAPS, RAILWAY_BASE, SERVER_ID, ROLE_ID
 from core.storage import tournaments, active_matches
 
 MAP_IDS = {
@@ -288,6 +288,11 @@ class HostMapButton(discord.ui.Button):
         team2 = match["teams"][1]["name"]
         team_size = match["team_size"]
 
+        # Per-tournament host region (falls back to the deployment default).
+        from core.storage import tournaments
+        from core.config import resolve_region
+        region_code, region_name = resolve_region(tournaments.get(match.get("tournament_id")))
+
         params = {
             "action": "host-comp",
             "mapId": MAP_IDS.get(self.map_name, self.map_name),
@@ -303,7 +308,10 @@ class HostMapButton(discord.ui.Button):
         query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
         glorp_url = f"{RAILWAY_BASE}/launch?client=glorp&{query}"
         crankshaft_url = f"{RAILWAY_BASE}/launch?client=crankshaft&{query}"
-        kcc_url = f"{RAILWAY_BASE}/launch?client=kcc&{query}"
+        # KCC needs a region to take its reliable host path (see pug/match.build_host_url).
+        # It switches region via its own client UI, so it doesn't hit the region+webhook hang.
+        kcc_query = urllib.parse.urlencode({**params, "region": region_code}, quote_via=urllib.parse.quote)
+        kcc_url = f"{RAILWAY_BASE}/launch?client=kcc&{kcc_query}"
 
         view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url, kcc_url=kcc_url)
         await interaction.response.send_message(
@@ -311,7 +319,7 @@ class HostMapButton(discord.ui.Button):
             f"1. Click a button below to open your client\n"
             f"2. The game will auto-create\n"
             f"3. Paste the Krunker link back in this channel\n\n"
-            f"Make sure your region is set to **{SET_REGION_NAME}**.",
+            f"Make sure your region is set to **{region_name}**.",
             view=view,
             ephemeral=True,
         )

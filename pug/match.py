@@ -1017,14 +1017,19 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
         "teamSize": f"{max(n1, n2)}v{max(n1, n2)}",
         "team1Players": ", ".join(_team_usernames(match, cap1, guild)),
         "team2Players": ", ".join(_team_usernames(match, cap2, guild)),
-        # NOTE: do NOT send "region" here. Krunker's comp-server allocation hangs on
-        # "Pending" and bounces back to setup when BOTH a forced region AND a webhook are
-        # present in the host URL. Either alone works; together they don't. The webhook is
-        # required (it's how results come back), so region is omitted -- the game hosts on
-        # the host's own default Krunker region, and region correctness is enforced after
-        # the fact when the host posts the link (see events/pug_listeners.py).
+        # NOTE on "region": glorp/crankshaft use Krunker's NATIVE host-comp, which hangs on
+        # "Pending" when BOTH a forced region AND a webhook are present -- so for those we
+        # omit it (the host's default region is used, and correctness is enforced after the
+        # fact when the host posts the link, see events/pug_listeners.py).
+        # The Krunker Civilian Client is the opposite (see the `if client == "kcc"` below).
         "webhook": WEBHOOK_URL,
     }
+    # The Krunker Civilian Client uses its OWN host flow that only takes the reliable
+    # (poll-until-the-page-is-ready) path when a region IS present; without it, KCC opens
+    # the client but never actually hosts. It switches region through its own client UI
+    # (not Krunker's allocator), so it does NOT hit the region+webhook hang glorp does.
+    if client == "kcc":
+        params["region"] = match.get("region_code", SET_REGION).upper()
     # Krunker expects spaces as %20 (quote), not the form-style "+" (quote_plus). The
     # KE bot's links use %20 and host instantly; matching that avoids a mangled player
     # list on the client side.

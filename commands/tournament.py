@@ -4,7 +4,7 @@ import time
 import discord
 from discord import app_commands
 from core.bot_instance import bot
-from core.config import SERVER_ID, ROLE_ID, RAILWAY_BASE, is_authorized, guild_object
+from core.config import SERVER_ID, ROLE_ID, RAILWAY_BASE, REGION_NAMES, resolve_region, is_authorized, guild_object
 from core.storage import tournaments, save_tournaments, save_config, active_matches, _dashboard_tokens
 from views.registration import SignupView
 from views.vod import VODSubmissionView
@@ -189,6 +189,44 @@ class TournamentCreateModal(discord.ui.Modal, title="Create Tournament"):
 @is_authorized()
 async def tournament_create(interaction: discord.Interaction):
     await interaction.response.send_modal(TournamentCreateModal())
+
+
+# /tournament-set-region
+@bot.tree.command(
+    name="tournament-set-region",
+    description="Set the Krunker host region for a tournament's matches.",
+)
+@is_authorized()
+@app_commands.describe(
+    tournament_id="The tournament ID",
+    region="The Krunker server region all matches in this tournament must host on",
+)
+@app_commands.choices(
+    region=[app_commands.Choice(name=f"{name} ({code})", value=code)
+            for code, name in REGION_NAMES.items()]
+)
+async def tournament_set_region(
+    interaction: discord.Interaction,
+    tournament_id: str,
+    region: app_commands.Choice[str],
+):
+    t_id = tournament_id.upper()
+    t = tournaments.get(t_id)
+    if not t or t.get("guild_id") != interaction.guild.id:
+        await interaction.response.send_message(
+            f"No tournament found with ID `{t_id}` in this server.", ephemeral=True
+        )
+        return
+
+    code = region.value.upper()
+    t["region"] = code
+    save_tournaments()
+    _, name = resolve_region(t)
+    await interaction.response.send_message(
+        f"Host region for **{t['name']}** set to **{name}** (`{code}`).\n"
+        f"All future match hosting for this tournament will require this region.",
+        ephemeral=True,
+    )
 
 
 # /tournament-start
