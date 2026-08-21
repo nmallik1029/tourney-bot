@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 
 from core.bot_instance import bot
-from core.config import guild_object
+from core.config import guild_object, REGION_NAMES
 from core.guild_views import GuildView
 from pug.config import (
     is_pug_admin,
@@ -225,6 +225,40 @@ async def pug_set_review_channel(interaction: discord.Interaction, channel: disc
     save_pug_data()
     await interaction.response.send_message(
         f"Account-link requests will be sent to {channel.mention} for review.", ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="pug-set-region",
+    description="Force all pugs in this server to host on one region (or clear to re-enable auto).",
+)
+@is_pug_admin()
+@app_commands.describe(
+    region="Region every pug in this server hosts on. Leave empty to clear and go back to auto.",
+)
+@app_commands.choices(
+    region=[app_commands.Choice(name=f"{name} ({code})", value=code)
+            for code, name in REGION_NAMES.items()]
+)
+async def pug_set_region(
+    interaction: discord.Interaction,
+    region: app_commands.Choice[str] = None,
+):
+    from core.guild_config import set_pug_forced_region
+    if region is None:
+        set_pug_forced_region("", interaction.guild.id)
+        await interaction.response.send_message(
+            "Forced pug region **cleared**. Pugs will auto-pick region from the lobby mix "
+            "(and the deployment default).",
+            ephemeral=True,
+        )
+        return
+    code = region.value.upper()
+    set_pug_forced_region(code, interaction.guild.id)
+    await interaction.response.send_message(
+        f"All pugs in this server will now host on **{REGION_NAMES.get(code, code)}** (`{code}`). "
+        f"Run `/pug-set-region` with no region to turn this off.",
+        ephemeral=True,
     )
 
 

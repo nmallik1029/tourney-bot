@@ -1040,7 +1040,16 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
 def compute_host_region(match: dict) -> tuple[str, str]:
     """Pick the host server from the lobby's region mix so EU doesn't always get screwed:
     EU-heavy lobbies shift to New York, very EU-heavy to Frankfurt; otherwise the
-    deployment-configured default (SET_REGION, Dallas for CKL)."""
+    deployment-configured default (SET_REGION, Dallas for CKL).
+
+    A guild can override all of this with a forced region (e.g. a SG-only server): when
+    set, every pug in that guild hosts there and the lobby-based swapping is skipped."""
+    from core.guild_config import pug_forced_region
+    from core.config import REGION_NAMES
+    forced = pug_forced_region(match.get("guild_id"))
+    if forced:
+        return forced, REGION_NAMES.get(forced, forced)
+
     na = sum(1 for p in match.get("players", []) if get_player(p).get("region", "").upper() == "NA")
     eu = sum(1 for p in match.get("players", []) if get_player(p).get("region", "").upper() == "EU")
     if eu >= 6 and na <= 2:

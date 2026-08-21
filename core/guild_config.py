@@ -211,3 +211,15 @@ def challonge_subdomain(guild_id: int | None = None) -> str:
 def set_challonge_subdomain(value: str, guild_id: int | None = None):
     gconf(guild_id)["challonge_subdomain"] = (value or "").strip()
     save_guild_config()
+
+
+# Forced PUG host region (region code like "SIN"). When set, every pug in this guild
+# hosts on this region and the lobby-based dynamic swapping is bypassed. Empty = off
+# (fall back to the region mix / deployment default).
+def pug_forced_region(guild_id: int | None = None) -> str:
+    return str(gconf(guild_id).get("pug_region", "") or "").strip().upper()
+
+
+def set_pug_forced_region(code: str, guild_id: int | None = None):
+    gconf(guild_id)["pug_region"] = (code or "").strip().upper()
+    save_guild_config()
