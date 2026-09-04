@@ -14,6 +14,7 @@ MAP_IDS = {
     "Undergrowth": "Undergrowth",
     "Sandstorm": "Sandstorm",
     "Burg": "Burg",
+    "Frontier": "Frontier",
 }
 
 WEBHOOK_URL = os.environ.get(
@@ -21,17 +22,21 @@ WEBHOOK_URL = os.environ.get(
     "https://tourney-bot-production.up.railway.app/krunker",
 )
 
+# Each sequence must remove exactly len(MAPS) - 1 maps so that a single decider
+# remains in remaining_maps. Adding a map to the pool means adding a step here.
+# Upper seed (team 0) bans first and last.
 PB_SEQUENCES = {
     "bo1": [
         (0, "ban"), (1, "ban"), (0, "ban"), (1, "ban"), (0, "ban"), (1, "ban"),
+        (0, "ban"),
     ],
     "bo3": [
         (0, "ban"), (1, "ban"),
         (0, "pick"), (1, "pick"),
-        (0, "ban"), (1, "ban"),
+        (0, "ban"), (1, "ban"), (0, "ban"),
     ],
     "bo5": [
-        (0, "ban"), (0, "ban"),
+        (0, "ban"), (0, "ban"), (0, "ban"),
         (0, "pick"), (1, "pick"), (0, "pick"), (1, "pick"),
     ],
 }

@@ -53,7 +53,7 @@ def resolve_region(tournament: dict | None) -> tuple[str, str]:
     return code, REGION_NAMES.get(code, code)
 
 
-MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg"]
+MAPS = ["Bureau", "Lush", "Site", "Industry", "Undergrowth", "Sandstorm", "Burg", "Frontier"]
 
 
 def guild_object():

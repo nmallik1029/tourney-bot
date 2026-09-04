@@ -178,10 +178,20 @@ See [Match Flow](#match-flow). Matches are started from the admin bracket page.
 4. Click **Start Match**, creates a private matchroom channel for both teams
 
 ### Pick/Ban (Step 1/3)
-Captains use buttons to ban/pick maps in sequence:
-- **BO1**: 6 bans alternating, last map remaining is the map
-- **BO3**: 2 bans → 2 picks → 2 bans → last map is decider
-- **BO5**: 2 bans → 4 picks → last map is decider
+Captains use buttons to ban/pick maps in sequence. The map pool has **8 maps**
+(Bureau, Lush, Site, Industry, Undergrowth, Sandstorm, Burg, Frontier), and every
+format removes 7 of them so exactly one decider is left over. The **upper seed**
+bans first and last.
+
+- **BO1**: 7 bans alternating (upper seed bans 1st, 3rd, 5th, 7th) — last map remaining is the map
+- **BO3**: 2 bans → 2 picks → 3 bans → last map is decider
+- **BO5**: 3 bans (all upper seed) → 4 picks → last map is decider
+
+> **Adding a map to the pool?** Add it to `MAPS` in `core/config.py`, add a step to
+> *every* sequence in `PB_SEQUENCES` (`views/pickban.py`) so the counts still leave
+> one decider, and drop a lowercase `maps/{name}.png` background in for scoreboards.
+> Skipping the `PB_SEQUENCES` step leaves two maps unspent and the "decider" silently
+> becomes whichever one comes first in the pool.
 
 ### Hosting (Step 2/3)
 The **upper-seeded team** always hosts. The host captain clicks **Host Map 1** which:
