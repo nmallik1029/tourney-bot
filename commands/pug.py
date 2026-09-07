@@ -664,6 +664,10 @@ async def pug_bigboard(interaction: discord.Interaction):
     cfg = pug_data["config"]
     cfg.setdefault("bigboard_stat", "elo")
     cfg["bigboard_page"] = 0
+    # Seed the rank snapshot so a freshly posted board reads as "steady" rather than
+    # marking all 50-odd players as new; real movement starts after the next match.
+    from views.pug_queue import snapshot_bigboard_ranks
+    snapshot_bigboard_ranks()
     msg = await interaction.channel.send(embed=build_bigboard_embed(), view=BigBoardView())
     cfg["bigboard_channel_id"] = interaction.channel.id
     cfg["bigboard_message_id"] = msg.id

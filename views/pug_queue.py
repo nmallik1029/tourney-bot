@@ -1,3 +1,5 @@
+import time
+
 import discord
 
 from core.guild_views import GuildView
@@ -204,12 +206,12 @@ def _ranked_for_stat(stat_key: str) -> list:
     return out
 
 
-def build_stat_leaderboard(stat_key="elo", start=0, count=10, columns=1):
-    """Build a leaderboard embed for one stat. Returns (embed, total_eligible).
-    With columns>1 the `count` players are split into that many inline columns."""
+def build_stat_leaderboard(stat_key="elo", start=0, count=10):
+    """Build a single-column leaderboard embed for one stat. Returns (embed, total).
+    Used by the ephemeral /leaderboard; the big board renders its own table."""
     if stat_key not in STATS:
         stat_key = "elo"
-    label, _v, full_disp, short_disp, _e = STATS[stat_key]
+    label, _v, full_disp, _short, _e = STATS[stat_key]
     ranked = _ranked_for_stat(stat_key)
     total = len(ranked)
     chunk = ranked[start:start + count]
@@ -219,20 +221,8 @@ def build_stat_leaderboard(stat_key="elo", start=0, count=10, columns=1):
         embed.description = "*No ranked players yet. Play a game to get on the board.*"
         return embed, total
 
-    if columns <= 1:
-        lines = [f"`{start+i+1}.` <@{did}> | {full_disp(p)}" for i, (did, p) in enumerate(chunk)]
-        embed.description = "\n".join(lines)
-    else:
-        # Spread the page's players evenly across the columns so they all sit on one
-        # row (Discord renders at most 3 inline fields per row) with no stray column.
-        per_col = max(1, (len(chunk) + columns - 1) // columns)
-        for c in range(columns):
-            seg = chunk[c*per_col:(c+1)*per_col]
-            if not seg:
-                break
-            base = start + c*per_col
-            val = "\n".join(f"`{base+j+1}.` <@{did}> | {short_disp(p)}" for j, (did, p) in enumerate(seg))
-            embed.add_field(name="​", value=val, inline=True)  # blank header (ranks are in the lines)
+    lines = [f"`{start+i+1}.` <@{did}> | {full_disp(p)}" for i, (did, p) in enumerate(chunk)]
+    embed.description = "\n".join(lines)
     return embed, total
 
 
@@ -248,7 +238,7 @@ def build_normal_leaderboard(stat="elo", page=0):
     total = len(_ranked_for_stat(stat))
     pages = max(1, (total + NORMAL_PER_PAGE - 1) // NORMAL_PER_PAGE)
     page = max(0, min(page, pages - 1))
-    embed, _ = build_stat_leaderboard(stat, page * NORMAL_PER_PAGE, NORMAL_PER_PAGE, columns=1)
+    embed, _ = build_stat_leaderboard(stat, page * NORMAL_PER_PAGE, NORMAL_PER_PAGE)
     embed.set_footer(text=f"Page {page+1}/{pages} | {total} ranked players")
     return embed, page, pages
 
@@ -291,9 +281,21 @@ class LeaderboardView(GuildView):
         return btn
 
 
-# ── Big board (admin display): 1-50 in 5 columns, persistent, shared state ───────
-BIGBOARD_SIZE = 51       # divisible by 3 columns of 17
-BIGBOARD_COLUMNS = 3
+# ── Big board (admin display): persistent multi-stat table, shared state ───────
+# Rendered as an ANSI code block so every column lines up. Discord mentions are
+# proportional-width pills and can never align, so players are shown by their
+# linked Krunker username instead (that is also the name they play under).
+BIGBOARD_SIZE = 25       # rows per page; keeps the block inside a phone's width/height
+BIGBOARD_NAME_W = 13     # name column, chosen so the widest row stays <= 42 chars
+
+# Discord ANSI code-block colours (30-37 fg). Only these are supported.
+_A = {
+    "reset": "\u001b[0m", "grey": "\u001b[0;30m", "red": "\u001b[0;31m",
+    "green": "\u001b[0;32m", "gold": "\u001b[0;33m", "blue": "\u001b[0;34m",
+    "pink": "\u001b[0;35m", "cyan": "\u001b[0;36m", "white": "\u001b[0;37m",
+    "bold": "\u001b[1m",
+}
+
 
 
 def _bigboard_pages(stat_key: str) -> int:
@@ -301,17 +303,106 @@ def _bigboard_pages(stat_key: str) -> int:
     return max(1, (total + BIGBOARD_SIZE - 1) // BIGBOARD_SIZE)
 
 
+def _display_name(did: int, p: dict) -> str:
+    """Krunker username for the board. Falls back to the discord id if unlinked."""
+    names = p.get("usernames") or []
+    name = names[0] if names else f"id:{did}"
+    return (name[:BIGBOARD_NAME_W - 1] + "…") if len(name) > BIGBOARD_NAME_W else name
+
+
+def _movement(did: int, stat: str) -> tuple[str, str]:
+    """(arrow, colour) for rank movement caused by the most recent match. Reads the
+    delta computed at snapshot time rather than recomputing, so the arrows stay put
+    while people page/sort through the board. ELO-only: it is the only ranking whose
+    ordering we persist."""
+    if stat != "elo":
+        return "", "grey"
+    cfg = pug_data["config"]
+    if str(did) not in cfg.get("bigboard_prev_ranks", {}):
+        return "·", "grey"          # new to the board
+    delta = cfg.get("bigboard_deltas", {}).get(str(did), 0)
+    if delta == 0:
+        return "-", "grey"
+    arrow = "▲" if delta > 0 else "▼"
+    mag = abs(delta)
+    return (f"{arrow}{mag}" if mag < 10 else f"{arrow}+"), ("green" if delta > 0 else "red")
+
+
+def snapshot_bigboard_ranks() -> None:
+    """Recompute movement against the previous ELO ordering, then store the new one.
+    Called only after a match finishes. If this ran on every render, the deltas would
+    reset to '-' the moment anyone clicked a page button."""
+    cfg = pug_data["config"]
+    prev = cfg.get("bigboard_prev_ranks", {})
+    new = {str(did): i + 1 for i, (did, _p) in enumerate(_ranked_for_stat("elo"))}
+    cfg["bigboard_deltas"] = {
+        did: prev[did] - rank for did, rank in new.items()
+        if did in prev and prev[did] != rank
+    }
+    cfg["bigboard_prev_ranks"] = new
+
+
+def _bigboard_row(rank: int, did: int, p: dict, stat: str) -> str:
+    c = _A
+    name = _display_name(did, p)
+    wins, losses = p.get("wins", 0), p.get("losses", 0)
+    wl = f"{wins}-{losses}"
+    wr = round(_winrate(p) * 100)
+    kd = _kd(p)
+
+    rank_col = {1: "gold", 2: "white", 3: "red"}.get(rank, "grey")
+    name_col = rank_col if rank <= 3 else "white"
+    kd_col = "green" if kd >= 1.3 else ("red" if kd < 0.9 else "white")
+    # _kd() returns float(kills) on a zero-death game, so clamp the display or a
+    # single flawless round would widen the column and wrap the row on mobile.
+    kd_txt = f"{kd:.2f}" if kd < 100 else "99+"
+    wl = wl if len(wl) <= 6 else f"{wins}-{losses}"[:6]
+    wr_col = "green" if wr >= 55 else ("red" if wr < 45 else "white")
+    arrow, arrow_col = _movement(did, stat)
+
+    return (
+        f"{c[rank_col]}{c['bold']}{rank:>2}{c['reset']} "
+        f"{c[arrow_col]}{arrow:<2}{c['reset']} "
+        f"{c[name_col]}{name:<{BIGBOARD_NAME_W}}{c['reset']} "
+        f"{c['gold']}{c['bold']}{p.get('elo', 0):>4}{c['reset']} "
+        f"{c['white']}{wl:>6}{c['reset']} "
+        f"{c[kd_col]}{kd_txt:>5}{c['reset']} "
+        f"{c[wr_col]}{str(wr) + '%':>4}{c['reset']}"
+    )
+
+
 def build_bigboard_embed() -> discord.Embed:
     cfg = pug_data["config"]
     stat = cfg.get("bigboard_stat", "elo")
     if stat not in STATS:
         stat = "elo"
+    label = STATS[stat][0]
+    ranked = _ranked_for_stat(stat)
+    total = len(ranked)
     pages = _bigboard_pages(stat)
     page = max(0, min(cfg.get("bigboard_page", 0), pages - 1))
-    embed, total = build_stat_leaderboard(stat, start=page*BIGBOARD_SIZE, count=BIGBOARD_SIZE, columns=BIGBOARD_COLUMNS)
-    lo = page*BIGBOARD_SIZE + 1
-    hi = min(total, (page+1)*BIGBOARD_SIZE)
-    embed.set_footer(text=f"Ranks {lo}-{hi} of {total} | Page {page+1}/{pages}")
+    chunk = ranked[page * BIGBOARD_SIZE:(page + 1) * BIGBOARD_SIZE]
+
+    embed = discord.Embed(title=f"{BRAND} Leaderboard", color=0xF1C40F)
+    if not chunk:
+        embed.description = "*No ranked players yet. Play a game to get on the board.*"
+        return embed
+
+    c = _A
+    header = (
+        f"{c['cyan']}{c['bold']}"
+        f" # {'Δ' if stat == 'elo' else '':<2} {'PLAYER':<{BIGBOARD_NAME_W}}"
+        f" {'ELO':>4} {'W-L':>6} {'K/D':>5} {'WIN':>4}"
+        f"{c['reset']}"
+    )
+    rows = [_bigboard_row(page * BIGBOARD_SIZE + i + 1, did, p, stat)
+            for i, (did, p) in enumerate(chunk)]
+    block = "```ansi\n" + header + "\n" + "\n".join(rows) + "\n```"
+
+    embed.description = f"Sorted by **{label}** · updated <t:{int(time.time())}:R>\n{block}"
+    lo = page * BIGBOARD_SIZE + 1
+    hi = min(total, (page + 1) * BIGBOARD_SIZE)
+    embed.set_footer(text=f"Ranks {lo}-{hi} of {total}  |  Page {page+1}/{pages}")
     return embed
 
 
@@ -324,6 +415,8 @@ async def refresh_bigboard(bot):
     mid = cfg.get("bigboard_message_id")
     if not mid:
         return
+    snapshot_bigboard_ranks()   # recompute movement before rendering
+    save_pug_data()
     try:
         msg = await ch.fetch_message(mid)
         await msg.edit(embed=build_bigboard_embed(), view=BigBoardView())
@@ -343,7 +436,7 @@ class _BigCycleButton(discord.ui.Button):
             cur = pug_data["config"].get("bigboard_stat", "elo")
         if cur not in STATS:
             cur = "elo"
-        super().__init__(label=f"Stat: {SHORT_LABELS[cur]}", style=discord.ButtonStyle.primary,
+        super().__init__(label=f"Sort: {SHORT_LABELS[cur]}", style=discord.ButtonStyle.primary,
                          custom_id="bb_cycle", row=0)
 
     async def callback(self, interaction: discord.Interaction):
@@ -377,5 +470,5 @@ class BigBoardView(GuildView):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(_BigCycleButton())
-        self.add_item(_BigPageButton("◀ Prev 50", "bigboard_prev", -1))
-        self.add_item(_BigPageButton("Next 50 ▶", "bigboard_next", +1))
+        self.add_item(_BigPageButton(f"◀ Prev {BIGBOARD_SIZE}", "bigboard_prev", -1))
+        self.add_item(_BigPageButton(f"Next {BIGBOARD_SIZE} ▶", "bigboard_next", +1))

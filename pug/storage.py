@@ -46,6 +46,8 @@ def _default_data() -> dict:
             "bigboard_message_id": 0,
             "bigboard_stat": "elo",
             "bigboard_page": 0,
+            "bigboard_prev_ranks": {},   # discord_id(str) -> ELO rank at last match end
+            "bigboard_deltas": {},       # discord_id(str) -> rank change from that match
         },
         "dashboard_token": "",
     }
