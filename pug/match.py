@@ -1673,6 +1673,11 @@ async def _finalize_pug_match_end(match, payload, teams, players, winner_team_nu
         mvp = max(players, key=lambda p: p.get("score", 0), default=None)
         mvp_did = username_to_discord(mvp.get("name", "")) if mvp else None
         mvp_line = f"**MVP:** <@{mvp_did}>\n" if mvp_did else ""
+        if mvp_did:
+            # Credit the career MVP counter shown on the leaderboard. The same line is
+            # re-parsed by /pug-backfill-mvps, so this stays consistent on a rescan.
+            from pug.storage import add_mvp
+            add_mvp(mvp_did)
 
         embed = discord.Embed(
             title=f"{match['name'].upper()} | {winner_krunker['name']}'s team wins",

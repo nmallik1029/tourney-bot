@@ -1,3 +1,4 @@
+import re
 import time
 
 import discord
@@ -41,6 +42,7 @@ from pug.storage import (
     reset_rating,
     reset_cached_stats,
     reset_cached_stats_all,
+    set_mvp_counts,
 )
 from views.pug_queue import (
     QueueView,
@@ -675,6 +677,67 @@ async def pug_bigboard(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"Big leaderboard posted in {interaction.channel.mention}. "
         f"It updates automatically after each match; anyone can switch the stat or page.",
+        ephemeral=True,
+    )
+
+
+# Matches the MVP line written by pug/match.py into each #results embed:
+#   **MVP:** <@123456789012345678>
+_MVP_RE = re.compile(r"\*\*MVP:\*\*\s*<@!?(\d+)>")
+
+
+@bot.tree.command(
+    name="pug-backfill-mvps",
+    description="Rescan #results and rebuild every player's MVP count (admin).",
+)
+@is_pug_admin()
+async def pug_backfill_mvps(interaction: discord.Interaction):
+    cfg = pug_data["config"]
+    results_ch = interaction.client.get_channel(cfg.get("results_channel_id"))
+    if not results_ch:
+        await interaction.response.send_message(
+            "No **#results** channel is configured. Run `/pug-setup` first.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    counts: dict[str, int] = {}
+    scanned = matched = unlinked = 0
+    try:
+        async for msg in results_ch.history(limit=None, oldest_first=True):
+            scanned += 1
+            for embed in msg.embeds:
+                m = _MVP_RE.search(embed.description or "")
+                if not m:
+                    continue
+                did = m.group(1)
+                matched += 1
+                if did in pug_data["players"]:
+                    counts[did] = counts.get(did, 0) + 1
+                else:
+                    unlinked += 1
+                break   # one MVP per results embed
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"I can't read history in {results_ch.mention} (missing **Read Message History**).",
+            ephemeral=True,
+        )
+        return
+
+    applied = set_mvp_counts(counts)
+
+    from views.pug_queue import refresh_bigboard
+    await refresh_bigboard(interaction.client)
+
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top_txt = "\n".join(f"`{n}` MVP" + ("s" if n != 1 else "") + f" - <@{d}>" for d, n in top)
+    note = f"\n{unlinked} MVP line(s) pointed at unlinked accounts and were skipped." if unlinked else ""
+    await interaction.followup.send(
+        f"**MVP backfill complete.**\n"
+        f"Scanned **{scanned}** messages in {results_ch.mention}, found **{matched}** MVP lines, "
+        f"credited **{applied}** players.{note}\n"
+        + (f"\n**Top MVPs**\n{top_txt}" if top else ""),
         ephemeral=True,
     )
 

@@ -461,6 +461,9 @@ def get_player(discord_id: int) -> dict:
     player.setdefault("peak_elo", player.get("elo", ELO_START))
     player.setdefault("low_kd_flags", 0)
     player.setdefault("low_obj_flags", 0)
+    # Lobby MVPs (highest score across both teams). Recomputable from #results via
+    # /pug-backfill-mvps, so it is safe to leave at 0 for pre-existing players.
+    player.setdefault("mvps", 0)
     # Per-game snapshots for the /rank trend card: one entry per game with a timestamp
     # and the player's career values at that point. Empty for players who haven't played
     # since this was added (the card shows "not enough data" until they have >=2 points).
@@ -538,6 +541,37 @@ def get_avg_rating(discord_id: int) -> float:
     return round(p.get("rating_sum", 0.0) / g, 2) if g else 0.0
 
 
+def add_mvp(discord_id: int) -> int:
+    """Credit one lobby MVP. Returns the player's new total."""
+    p = get_player(discord_id)
+    p["mvps"] = p.get("mvps", 0) + 1
+    return p["mvps"]
+
+
+def get_mvps(discord_id: int) -> int:
+    return get_player(discord_id).get("mvps", 0)
+
+
+def set_mvp_counts(counts: dict) -> int:
+    """Overwrite every player's MVP total from {discord_id(int|str): count}.
+
+    Used by the #results backfill. This *sets* rather than adds so re-running the
+    backfill is idempotent -- live matches also post to #results, so a later rescan
+    still sees them and arrives at the same totals. Players missing from `counts`
+    are zeroed, which is what a full rescan implies.
+    """
+    for did_s in list(pug_data["players"].keys()):
+        pug_data["players"][did_s]["mvps"] = 0
+    applied = 0
+    for did, n in counts.items():
+        key = str(did)
+        if key in pug_data["players"]:
+            pug_data["players"][key]["mvps"] = int(n)
+            applied += 1
+    save_pug_data()
+    return applied
+
+
 def reset_rating(discord_id: int):
     """Wipe a player's average CKL rating (rating sum + rated-game count) without
     touching their ELO, W/L, K/D, or OBJ. Their average rebuilds from future games."""
@@ -562,6 +596,7 @@ def _reset_cached_stats_record(p: dict):
     p["peak_elo"] = ELO_START
     p["low_kd_flags"] = 0
     p["low_obj_flags"] = 0
+    p["mvps"] = 0
     p["stat_history"] = []
 
 

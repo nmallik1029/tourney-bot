@@ -165,6 +165,10 @@ def _avg_obj(p):
     return (p.get("obj", 0) / g) if g else 0.0
 
 
+def _mvps(p):
+    return p.get("mvps", 0)
+
+
 def _played_ranked(p):
     return (p.get("wins", 0) + p.get("losses", 0)) > 0
 
@@ -195,8 +199,11 @@ STATS = {
     "obj":    ("Avg OBJ",      _avg_obj,
                lambda p: f"**{round(_avg_obj(p))}** obj",
                lambda p: f"**{round(_avg_obj(p))}**", _played_stats),
+    "mvp":    ("MVPs",         _mvps,
+               lambda p: f"**{_mvps(p)}** MVP" + ("s" if _mvps(p) != 1 else ""),
+               lambda p: f"**{_mvps(p)}**", _played_ranked),
 }
-STAT_ORDER = ["elo", "wl", "games", "rating", "kd", "obj"]
+STAT_ORDER = ["elo", "wl", "games", "rating", "kd", "obj", "mvp"]
 
 
 def _ranked_for_stat(stat_key: str) -> list:
@@ -226,7 +233,8 @@ def build_stat_leaderboard(stat_key="elo", start=0, count=10):
     return embed, total
 
 
-SHORT_LABELS = {"elo": "ELO", "wl": "W/L", "games": "Games", "rating": "Rating", "kd": "K/D", "obj": "OBJ"}
+SHORT_LABELS = {"elo": "ELO", "wl": "W/L", "games": "Games", "rating": "Rating",
+                "kd": "K/D", "obj": "OBJ", "mvp": "MVPs"}
 NORMAL_PER_PAGE = 10
 
 
@@ -285,8 +293,11 @@ class LeaderboardView(GuildView):
 # Rendered as an ANSI code block so every column lines up. Discord mentions are
 # proportional-width pills and can never align, so players are shown by their
 # linked Krunker username instead (that is also the name they play under).
-BIGBOARD_SIZE = 25       # rows per page; keeps the block inside a phone's width/height
-BIGBOARD_NAME_W = 13     # name column, chosen so the widest row stays <= 42 chars
+# 20 rows, not 25: with every stat column the ANSI colour codes push each row to
+# ~170 chars, and 25 rows would overrun Discord's 4096-char embed description.
+BIGBOARD_SIZE = 20
+BIGBOARD_NAME_W = 12     # name column; full row lands at 55 chars
+BIGBOARD_DESC_LIMIT = 4096
 
 # Discord ANSI code-block colours (30-37 fg). Only these are supported.
 _A = {
@@ -347,17 +358,23 @@ def _bigboard_row(rank: int, did: int, p: dict, stat: str) -> str:
     name = _display_name(did, p)
     wins, losses = p.get("wins", 0), p.get("losses", 0)
     wl = f"{wins}-{losses}"
+    wl = wl if len(wl) <= 6 else wl[:6]
     wr = round(_winrate(p) * 100)
     kd = _kd(p)
+    # _kd() returns float(kills) on a zero-death game, so clamp the display or a
+    # single flawless round would widen the column and break the alignment.
+    kd_txt = f"{kd:.2f}" if kd < 100 else "99+"
+    rating = _avg_rating(p)
+    obj = round(_avg_obj(p))
+    obj_txt = str(obj) if obj < 10000 else "9999+"
+    mvps = p.get("mvps", 0)
 
     rank_col = {1: "gold", 2: "white", 3: "red"}.get(rank, "grey")
     name_col = rank_col if rank <= 3 else "white"
     kd_col = "green" if kd >= 1.3 else ("red" if kd < 0.9 else "white")
-    # _kd() returns float(kills) on a zero-death game, so clamp the display or a
-    # single flawless round would widen the column and wrap the row on mobile.
-    kd_txt = f"{kd:.2f}" if kd < 100 else "99+"
-    wl = wl if len(wl) <= 6 else f"{wins}-{losses}"[:6]
     wr_col = "green" if wr >= 55 else ("red" if wr < 45 else "white")
+    rating_col = "green" if rating >= 6.5 else ("red" if 0 < rating < 4.5 else "white")
+    mvp_col = "gold" if mvps else "grey"
     arrow, arrow_col = _movement(did, stat)
 
     return (
@@ -367,7 +384,10 @@ def _bigboard_row(rank: int, did: int, p: dict, stat: str) -> str:
         f"{c['gold']}{c['bold']}{p.get('elo', 0):>4}{c['reset']} "
         f"{c['white']}{wl:>6}{c['reset']} "
         f"{c[kd_col]}{kd_txt:>5}{c['reset']} "
-        f"{c[wr_col]}{str(wr) + '%':>4}{c['reset']}"
+        f"{c[wr_col]}{str(wr) + '%':>4}{c['reset']} "
+        f"{c[rating_col]}{rating:>4.1f}{c['reset']} "
+        f"{c['cyan']}{obj_txt:>5}{c['reset']} "
+        f"{c[mvp_col]}{mvps:>3}{c['reset']}"
     )
 
 
@@ -393,11 +413,19 @@ def build_bigboard_embed() -> discord.Embed:
         f"{c['cyan']}{c['bold']}"
         f" # {'Δ' if stat == 'elo' else '':<2} {'PLAYER':<{BIGBOARD_NAME_W}}"
         f" {'ELO':>4} {'W-L':>6} {'K/D':>5} {'WIN':>4}"
+        f" {'CKL':>4} {'OBJ':>5} {'MVP':>3}"
         f"{c['reset']}"
     )
     rows = [_bigboard_row(page * BIGBOARD_SIZE + i + 1, did, p, stat)
             for i, (did, p) in enumerate(chunk)]
-    block = "```ansi\n" + header + "\n" + "\n".join(rows) + "\n```"
+    # Never let a wide row set overrun the embed description: drop rows off the end
+    # until it fits rather than letting Discord reject the whole edit.
+    def _wrap(rs):
+        return "```ansi\n" + header + "\n" + "\n".join(rs) + "\n```"
+
+    while rows and len(_wrap(rows)) > BIGBOARD_DESC_LIMIT - 120:
+        rows.pop()
+    block = _wrap(rows)
 
     embed.description = f"Sorted by **{label}** · updated <t:{int(time.time())}:R>\n{block}"
     lo = page * BIGBOARD_SIZE + 1
