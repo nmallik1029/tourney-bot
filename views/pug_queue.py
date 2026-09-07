@@ -1,4 +1,4 @@
-import time
+from datetime import datetime, timezone
 
 import discord
 
@@ -226,6 +226,8 @@ def build_stat_leaderboard(stat_key="elo", start=0, count=10):
     embed = discord.Embed(title=f"{BRAND} Leaderboard: {label}", color=0xF1C40F)
     if not chunk:
         embed.description = "*No ranked players yet. Play a game to get on the board.*"
+        embed.set_footer(text="Updated")
+        embed.timestamp = datetime.now(timezone.utc)
         return embed, total
 
     lines = [f"`{start+i+1}.` <@{did}> | {full_disp(p)}" for i, (did, p) in enumerate(chunk)]
@@ -300,13 +302,64 @@ BIGBOARD_NAME_W = 12     # name column; full row lands at 55 chars
 BIGBOARD_DESC_LIMIT = 4096
 
 # Discord ANSI code-block colours (30-37 fg). Only these are supported.
-_A = {
-    "reset": "\u001b[0m", "grey": "\u001b[0;30m", "red": "\u001b[0;31m",
-    "green": "\u001b[0;32m", "gold": "\u001b[0;33m", "blue": "\u001b[0;34m",
-    "pink": "\u001b[0;35m", "cyan": "\u001b[0;36m", "white": "\u001b[0;37m",
-    "bold": "\u001b[1m",
-}
+# Discord ANSI code blocks: foreground 30-37, background 40-47. 40 (#4f545c) is
+# the dark grey used to band whichever column the board is currently sorted by.
+_FG = {"grey": 30, "red": 31, "green": 32, "gold": 33,
+       "blue": 34, "pink": 35, "cyan": 36, "white": 37}
+_HL_BG = 40
+_RESET = "\u001b[0m"
 
+
+def _c(fg: str = "white", bold: bool = False, hl: bool = False) -> str:
+    """One ANSI escape. Discord's parser expects {style};{background};{foreground}."""
+    parts = ["1" if bold else "0"]
+    if hl:
+        parts.append(str(_HL_BG))
+    parts.append(str(_FG.get(fg, 37)))
+    return "\u001b[" + ";".join(parts) + "m"
+
+
+# key -> (header, width, align). Header and data rows are built from this one spec
+# so the highlight band lines up exactly between them.
+_COLS = [
+    ("rank", "#", 2, ">"),
+    ("delta", "\u0394", 2, "<"),
+    ("name", "PLAYER", BIGBOARD_NAME_W, "<"),
+    ("elo", "ELO", 4, ">"),
+    ("wl", "W-L", 6, ">"),
+    ("kd", "K/D", 5, ">"),
+    ("win", "WIN", 4, ">"),
+    ("ckl", "CKL", 4, ">"),
+    ("obj", "OBJ", 5, ">"),
+    ("mvp", "MVP", 3, ">"),
+]
+
+# Which displayed column each sort stat bands. "games" has no column of its own,
+# so it bands W-L, which carries the same information (wins + losses).
+_SORT_COLUMN = {"elo": "elo", "wl": "win", "games": "wl", "rating": "ckl",
+                "kd": "kd", "obj": "obj", "mvp": "mvp"}
+
+
+def _join_cells(cells, hl_key) -> str:
+    """cells = [(key, text, fg, bold)]. The separator space in front of a highlighted
+    column is pulled inside the highlight so the grey band reads as one block."""
+    out = []
+    for i, (key, text, fg, bold) in enumerate(cells):
+        sep = "" if i == 0 else " "
+        if key == hl_key:
+            out.append(_c(fg, bold, hl=True) + sep + text + _RESET)
+        else:
+            out.append(sep + _c(fg, bold) + text + _RESET)
+    return "".join(out)
+
+
+def _bigboard_header(stat: str) -> str:
+    cells = []
+    for key, title, w, align in _COLS:
+        if key == "delta" and stat != "elo":
+            title = ""      # movement is only tracked for the ELO ordering
+        cells.append((key, f"{title:{align}{w}}", "cyan", True))
+    return _join_cells(cells, _SORT_COLUMN.get(stat))
 
 
 def _bigboard_pages(stat_key: str) -> int:
@@ -354,7 +407,6 @@ def snapshot_bigboard_ranks() -> None:
 
 
 def _bigboard_row(rank: int, did: int, p: dict, stat: str) -> str:
-    c = _A
     name = _display_name(did, p)
     wins, losses = p.get("wins", 0), p.get("losses", 0)
     wl = f"{wins}-{losses}"
@@ -377,18 +429,19 @@ def _bigboard_row(rank: int, did: int, p: dict, stat: str) -> str:
     mvp_col = "gold" if mvps else "grey"
     arrow, arrow_col = _movement(did, stat)
 
-    return (
-        f"{c[rank_col]}{c['bold']}{rank:>2}{c['reset']} "
-        f"{c[arrow_col]}{arrow:<2}{c['reset']} "
-        f"{c[name_col]}{name:<{BIGBOARD_NAME_W}}{c['reset']} "
-        f"{c['gold']}{c['bold']}{p.get('elo', 0):>4}{c['reset']} "
-        f"{c['white']}{wl:>6}{c['reset']} "
-        f"{c[kd_col]}{kd_txt:>5}{c['reset']} "
-        f"{c[wr_col]}{str(wr) + '%':>4}{c['reset']} "
-        f"{c[rating_col]}{rating:>4.1f}{c['reset']} "
-        f"{c['cyan']}{obj_txt:>5}{c['reset']} "
-        f"{c[mvp_col]}{mvps:>3}{c['reset']}"
-    )
+    cells = [
+        ("rank", f"{rank:>2}", rank_col, rank <= 3),
+        ("delta", f"{arrow:<2}", arrow_col, False),
+        ("name", f"{name:<{BIGBOARD_NAME_W}}", name_col, rank <= 3),
+        ("elo", f"{p.get('elo', 0):>4}", "gold", True),
+        ("wl", f"{wl:>6}", "white", False),
+        ("kd", f"{kd_txt:>5}", kd_col, False),
+        ("win", f"{str(wr) + '%':>4}", wr_col, False),
+        ("ckl", f"{rating:>4.1f}", rating_col, False),
+        ("obj", f"{obj_txt:>5}", "cyan", False),
+        ("mvp", f"{mvps:>3}", mvp_col, False),
+    ]
+    return _join_cells(cells, _SORT_COLUMN.get(stat))
 
 
 def build_bigboard_embed() -> discord.Embed:
@@ -396,7 +449,6 @@ def build_bigboard_embed() -> discord.Embed:
     stat = cfg.get("bigboard_stat", "elo")
     if stat not in STATS:
         stat = "elo"
-    label = STATS[stat][0]
     ranked = _ranked_for_stat(stat)
     total = len(ranked)
     pages = _bigboard_pages(stat)
@@ -406,16 +458,11 @@ def build_bigboard_embed() -> discord.Embed:
     embed = discord.Embed(title=f"{BRAND} Leaderboard", color=0xF1C40F)
     if not chunk:
         embed.description = "*No ranked players yet. Play a game to get on the board.*"
+        embed.set_footer(text="Updated")
+        embed.timestamp = datetime.now(timezone.utc)
         return embed
 
-    c = _A
-    header = (
-        f"{c['cyan']}{c['bold']}"
-        f" # {'Δ' if stat == 'elo' else '':<2} {'PLAYER':<{BIGBOARD_NAME_W}}"
-        f" {'ELO':>4} {'W-L':>6} {'K/D':>5} {'WIN':>4}"
-        f" {'CKL':>4} {'OBJ':>5} {'MVP':>3}"
-        f"{c['reset']}"
-    )
+    header = _bigboard_header(stat)
     rows = [_bigboard_row(page * BIGBOARD_SIZE + i + 1, did, p, stat)
             for i, (did, p) in enumerate(chunk)]
     # Never let a wide row set overrun the embed description: drop rows off the end
@@ -427,10 +474,13 @@ def build_bigboard_embed() -> discord.Embed:
         rows.pop()
     block = _wrap(rows)
 
-    embed.description = f"Sorted by **{label}** · updated <t:{int(time.time())}:R>\n{block}"
+    embed.description = block
     lo = page * BIGBOARD_SIZE + 1
     hi = min(total, (page + 1) * BIGBOARD_SIZE)
-    embed.set_footer(text=f"Ranks {lo}-{hi} of {total}  |  Page {page+1}/{pages}")
+    # Footer text is plain -- Discord does not render <t:...> markdown there -- so the
+    # update time goes in as a real embed timestamp, which the client formats itself.
+    embed.set_footer(text=f"Ranks {lo}-{hi} of {total}  |  Page {page+1}/{pages}  |  Updated")
+    embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
