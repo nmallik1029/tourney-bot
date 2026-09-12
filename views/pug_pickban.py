@@ -19,10 +19,14 @@ async def send_host_launch(interaction: discord.Interaction, match: dict, *, all
     glorp_url = build_host_url(match, "glorp", interaction.guild)
     crankshaft_url = build_host_url(match, "crankshaft", interaction.guild)
     kcc_url = build_host_url(match, "kcc", interaction.guild)
+    nmnez_url = build_host_url(match, "nmnez", interaction.guild)
     region_name = match.get("region_name", SET_REGION_NAME)
 
     from views.pickban import HostClientView
-    view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url, kcc_url=kcc_url)
+    view = HostClientView(
+        glorp_url=glorp_url, crankshaft_url=crankshaft_url,
+        kcc_url=kcc_url, nmnez_url=nmnez_url,
+    )
     await interaction.response.send_message(
         f"**Hosting {match['map']}**\n\n"
         f"1. Click a button to open your client\n"

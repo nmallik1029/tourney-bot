@@ -1030,6 +1030,13 @@ def build_host_url(match: dict, client: str, guild: discord.Guild) -> str:
     # (not Krunker's allocator), so it does NOT hit the region+webhook hang glorp does.
     if client == "kcc":
         params["region"] = match.get("region_code", SET_REGION).upper()
+    # NM/NZ also wants a region, for a different reason: it applies one by writing
+    # Krunker's own region setting and reloading, so the value never reaches the
+    # comp-server allocator and the region+webhook hang above does not apply. Without
+    # a region it still hosts, just wherever the host happened to be pointed.
+    elif client == "nmnez":
+        from views.pickban import nmnez_region
+        params["region"] = nmnez_region(match.get("region_code", SET_REGION))
     # Krunker expects spaces as %20 (quote), not the form-style "+" (quote_plus). The
     # KE bot's links use %20 and host instantly; matching that avoids a mangled player
     # list on the client side.

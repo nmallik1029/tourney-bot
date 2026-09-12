@@ -424,6 +424,16 @@ async def _process_webhook(payload: dict):
 
 
 # Launch redirect
+# client key -> (url scheme, display name). Each of these answers the same
+# `<scheme>://game?action=host-comp&...` contract.
+LAUNCH_CLIENTS = {
+    "glorp": ("glorp", "Glorp"),
+    "crankshaft": ("crankshaft", "CrankShaft"),
+    "kcc": ("kcc", "Krunker Civilian Client"),
+    "nmnez": ("nmnez", "NM/NZ"),
+}
+
+
 async def handle_launch(request: web.Request) -> web.Response:
     client = request.query.get("client", "glorp")
     params = {k: v for k, v in request.query.items() if k != "client"}
@@ -431,15 +441,11 @@ async def handle_launch(request: web.Request) -> web.Response:
     # decoded the incoming query, so without this the "+" would come back here and reach
     # the client in the glorp:// URL, mangling the player list.
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-    if client == "crankshaft":
-        target_url = f"crankshaft://game?{query}"
-    elif client == "kcc":
-        # Krunker Civilian Client registers the kcc:// scheme and parses action=host-comp.
-        target_url = f"kcc://game?{query}"
-    else:
-        target_url = f"glorp://game?{query}"
-
-    display_name = {"kcc": "Krunker Civilian Client", "crankshaft": "CrankShaft"}.get(client, client.title())
+    # Explicit table rather than an if/else chain with a catch-all: an unrecognised
+    # client used to fall through to glorp://, so a typo in the query string silently
+    # launched the wrong client instead of being visible.
+    scheme, display_name = LAUNCH_CLIENTS.get(client, LAUNCH_CLIENTS["glorp"])
+    target_url = f"{scheme}://game?{query}"
 
     html = f"""<!DOCTYPE html>
 <html>

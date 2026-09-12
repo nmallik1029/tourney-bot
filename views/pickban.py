@@ -22,6 +22,21 @@ WEBHOOK_URL = os.environ.get(
     "https://tourney-bot-production.up.railway.app/krunker",
 )
 
+# Our region codes that NM/NZ spells differently. Its parser resolves a code against
+# Krunker's own server keys and returns "" for anything it does not recognise, which
+# means the lobby silently goes up in whatever region the host already had selected.
+# Everything else we use (DAL/FRA/NY/SIN/SV/SYD/BHN/BRZ) it accepts as-is.
+NMNEZ_REGION_ALIASES = {
+    "TKY": "TOK",   # Tokyo
+    "IND": "MBI",   # India -> Mumbai
+}
+
+
+def nmnez_region(code: str) -> str:
+    """A region code in the spelling NM/NZ understands."""
+    code = (code or "").upper()
+    return NMNEZ_REGION_ALIASES.get(code, code)
+
 # Each sequence must remove exactly len(MAPS) - 1 maps so that a single decider
 # remains in remaining_maps. Adding a map to the pool means adding a step here.
 # Upper seed (team 0) bans first and last.
@@ -247,8 +262,16 @@ class MapActionButton(discord.ui.Button):
 
 
 class HostClientView(discord.ui.View):
-    def __init__(self, glorp_url: str, crankshaft_url: str, kcc_url: str):
+    def __init__(self, glorp_url: str, crankshaft_url: str, kcc_url: str, nmnez_url: str = ""):
         super().__init__(timeout=60)
+        # NM/NZ first: it is the only client whose host flow we control, and it is the
+        # one that switches region itself instead of relying on the host having it set.
+        if nmnez_url:
+            self.add_item(discord.ui.Button(
+                label="Open in NM/NZ",
+                style=discord.ButtonStyle.link,
+                url=nmnez_url,
+            ))
         self.add_item(discord.ui.Button(
             label="Open in Glorp",
             style=discord.ButtonStyle.link,
@@ -317,8 +340,18 @@ class HostMapButton(discord.ui.Button):
         # It switches region via its own client UI, so it doesn't hit the region+webhook hang.
         kcc_query = urllib.parse.urlencode({**params, "region": region_code}, quote_via=urllib.parse.quote)
         kcc_url = f"{RAILWAY_BASE}/launch?client=kcc&{kcc_query}"
+        # NM/NZ switches region through Krunker's own setting and reloads, so the region
+        # never reaches the comp-server allocator and it does not hit the region+webhook
+        # hang that keeps glorp/crankshaft from being sent one.
+        nmnez_query = urllib.parse.urlencode(
+            {**params, "region": nmnez_region(region_code)}, quote_via=urllib.parse.quote
+        )
+        nmnez_url = f"{RAILWAY_BASE}/launch?client=nmnez&{nmnez_query}"
 
-        view = HostClientView(glorp_url=glorp_url, crankshaft_url=crankshaft_url, kcc_url=kcc_url)
+        view = HostClientView(
+            glorp_url=glorp_url, crankshaft_url=crankshaft_url,
+            kcc_url=kcc_url, nmnez_url=nmnez_url,
+        )
         await interaction.response.send_message(
             f"**Hosting Map {self.map_index + 1}: {self.map_name}**\n\n"
             f"1. Click a button below to open your client\n"
