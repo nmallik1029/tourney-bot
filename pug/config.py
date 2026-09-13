@@ -24,8 +24,33 @@ PUG_CAPTAIN_ROLE_ID = int(os.environ.get("PUG_CAPTAIN_ROLE_ID", 0))
 PUG_SPECTATOR_ROLE_ID = int(os.environ.get("PUG_SPECTATOR_ROLE_ID", 0))
 
 # Match sizing / timing
-MATCH_SIZE = 8          # players per popped match (4v4)
+#
+# #queue runs one FIFO per size. A player may sit in several at once; whichever fills
+# first takes them, and popping a queue pulls them out of the others (pug.match).
+# Order here is the order the buttons and the embed sections appear in.
+QUEUE_SIZES: dict[str, int] = {
+    "2v2": 4,
+    "3v3": 6,
+    "4v4": 8,
+}
+DEFAULT_QUEUE_SIZE = "4v4"
+
+MATCH_SIZE = QUEUE_SIZES[DEFAULT_QUEUE_SIZE]   # 8. Still the default for older callers.
 TEAM_SIZE = 4           # players per team
+
+
+def size_key(total_players: int) -> str:
+    """`"3v3"` for a 6-player match. Falls back to the default for anything unexpected,
+    so an odd-sized match (a forced pop, say) still has a queue to return players to."""
+    for key, total in QUEUE_SIZES.items():
+        if total == total_players:
+            return key
+    return DEFAULT_QUEUE_SIZE
+
+
+def team_size_for(total_players: int) -> int:
+    """Players per team in a match of this total size."""
+    return max(1, total_players // 2)
 CHECKIN_SECONDS = 90    # how long un-checked-in players have before being dropped
 REPING_INTERVAL = 10    # seconds between re-pinging stragglers
 

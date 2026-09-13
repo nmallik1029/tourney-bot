@@ -4,10 +4,13 @@ import discord
 
 from core.guild_views import GuildView
 from core.guild_ctx import current_guild_or_none
-from pug.config import MATCH_SIZE, BRAND
+from pug.config import QUEUE_SIZES, BRAND
 from pug.storage import (
     pug_data,
-    pug_queue,
+    queues_for,
+    queue_for,
+    queued_sizes,
+    leave_all_queues,
     get_player,
     is_noadded,
     get_noadd_info,
@@ -22,24 +25,32 @@ def _account_link_mention() -> str:
 
 
 def build_queue_embed() -> discord.Embed:
-    """The persistent embed in #queue, showing who's currently queued."""
-    count = len(pug_queue)
+    """The persistent embed in #queue: one section per size.
+
+    A player can be in several queues at once, so the sections deliberately overlap and
+    the same name may appear more than once.
+    """
+    table = queues_for()
+    ready = [key for key, needed in QUEUE_SIZES.items() if len(table[key]) >= needed]
+
     embed = discord.Embed(
         title="Competitive Krunker League Queue",
-        description=f"**{count}/{MATCH_SIZE}** in queue",
-        color=0x5865F2 if count < MATCH_SIZE else 0x3FB950,
+        color=0x3FB950 if ready else 0x5865F2,
     )
 
-    if pug_queue:
-        lines = []
-        for i, pid in enumerate(pug_queue, start=1):
-            names = ", ".join(get_player(pid)["usernames"]) or "-"
-            lines.append(f"`{i}.` <@{pid}> | {names}")
-        embed.add_field(name="Players", value="\n".join(lines), inline=False)
-    else:
-        embed.add_field(name="Players", value="*Queue is empty*", inline=False)
+    for key, needed in QUEUE_SIZES.items():
+        queued = table[key]
+        if queued:
+            lines = []
+            for i, pid in enumerate(queued, start=1):
+                names = ", ".join(get_player(pid)["usernames"]) or "-"
+                lines.append(f"`{i}.` <@{pid}> | {names}")
+            value = "\n".join(lines)
+        else:
+            value = "*Empty*"
+        embed.add_field(name=f"{key} Queue \u2014 {len(queued)}/{needed}", value=value, inline=False)
 
-    embed.set_footer(text="Click Join to queue")
+    embed.set_footer(text="Join as many sizes as you like. Click the same button again to leave.")
     return embed
 
 
@@ -59,85 +70,148 @@ async def refresh_queue_embed(bot):
         pass
 
 
-class QueueView(GuildView):
-    def __init__(self):
-        super().__init__(timeout=None)
+def _join_blocked(interaction: discord.Interaction) -> str | None:
+    """Why this user may not queue, or None if they may. Same rules for every size."""
+    uid = interaction.user.id
 
-    @discord.ui.button(label="Join Queue", style=discord.ButtonStyle.success, custom_id="pug_join")
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+    from pug.config import member_is_viewer
+    if member_is_viewer(interaction.user):
+        return "Viewers can't join the queue."
+
+    if is_noadded(uid):
+        info = get_noadd_info(uid) or {}
+        until = info.get("until")
+        reason = info.get("reason") or "*No reason provided.*"
+        if until:
+            expiry = f"Your no-add expires <t:{int(until)}:R> (<t:{int(until)}:f>)."
+        else:
+            expiry = "Your no-add is **permanent** until an admin removes it."
+        return (
+            f"You are currently **noadded** and can't queue.\n"
+            f"{expiry}\n"
+            f"**Reason:** {reason}"
+        )
+
+    if not get_player(uid)["usernames"]:
+        return (
+            "You need a **linked Krunker account** before you can queue.\n"
+            f"Post your username + proof in {_account_link_mention()} to get access to the queue."
+        )
+
+    from pug.storage import in_active_match
+    if in_active_match(uid):
+        return "You're already in an active match."
+
+    return None
+
+
+class _JoinButton(discord.ui.Button):
+    """Join one size, or leave it if already in it.
+
+    Toggling rather than a per-size leave button keeps the row inside Discord's limit of
+    five while still letting someone back out of a single queue.
+    """
+
+    def __init__(self, size: str):
+        super().__init__(
+            label=f"Join {size}",
+            style=discord.ButtonStyle.success,
+            custom_id=f"pug_join_{size}",
+            row=0,
+        )
+        self.size = size
+
+    async def callback(self, interaction: discord.Interaction):
         uid = interaction.user.id
+        queue = queue_for(self.size)
 
-        from pug.config import member_is_viewer
-        if member_is_viewer(interaction.user):
+        # Already in it -> this is a leave.
+        if uid in queue:
+            queue.remove(uid)
+            still = queued_sizes(uid)
+            extra = f" Still queued for {', '.join(still)}." if still else ""
             await interaction.response.send_message(
-                "Viewers can't join the queue.", ephemeral=True
+                f"You left the **{self.size}** queue.{extra}", ephemeral=True
             )
-            return
-
-        if is_noadded(uid):
-            info = get_noadd_info(uid) or {}
-            until = info.get("until")
-            reason = info.get("reason") or "*No reason provided.*"
-            if until:
-                expiry = f"Your no-add expires <t:{int(until)}:R> (<t:{int(until)}:f>)."
-            else:
-                expiry = "Your no-add is **permanent** until an admin removes it."
-            await interaction.response.send_message(
-                f"You are currently **noadded** and can't queue.\n"
-                f"{expiry}\n"
-                f"**Reason:** {reason}",
-                ephemeral=True,
-            )
-            return
-        if not get_player(uid)["usernames"]:
-            await interaction.response.send_message(
-                "You need a **linked Krunker account** before you can queue.\n"
-                f"Post your username + proof in {_account_link_mention()} to get access to the queue.",
-                ephemeral=True,
-            )
-            return
-        if uid in pug_queue:
-            await interaction.response.send_message("You're already in the queue.", ephemeral=True)
+            await interaction.message.edit(embed=build_queue_embed(), view=QueueView())
             return
 
-        # Don't let players who are already in an active (popped) match re-queue.
-        from pug.storage import in_active_match
-        if in_active_match(uid):
-            await interaction.response.send_message(
-                "You're already in an active match.", ephemeral=True
-            )
+        blocked = _join_blocked(interaction)
+        if blocked:
+            await interaction.response.send_message(blocked, ephemeral=True)
             return
 
         get_player(uid)  # ensure a record exists
-        pug_queue.append(uid)
+        queue.append(uid)
+        needed = QUEUE_SIZES[self.size]
 
-        if len(pug_queue) >= MATCH_SIZE:
-            # Pop the queue. pop_queue takes the players and refreshes the embed.
+        if len(queue) >= needed:
+            # pop_queue takes the players and refreshes the embed.
             from pug.match import pop_queue
             await interaction.response.send_message(
-                "You joined the queue.", ephemeral=True
+                f"You joined the **{self.size}** queue.", ephemeral=True
             )
-            await pop_queue(interaction.guild, interaction.client)
-        else:
-            await interaction.response.send_message(
-                f"You joined the queue ({len(pug_queue)}/{MATCH_SIZE}).", ephemeral=True
-            )
-            await interaction.message.edit(embed=build_queue_embed(), view=self)
-
-    @discord.ui.button(label="Leave Queue", style=discord.ButtonStyle.secondary, custom_id="pug_leave")
-    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        uid = interaction.user.id
-        if uid not in pug_queue:
-            await interaction.response.send_message("You're not in the queue.", ephemeral=True)
+            await pop_queue(interaction.guild, interaction.client, size=self.size)
             return
-        pug_queue.remove(uid)
-        await interaction.response.send_message("You left the queue.", ephemeral=True)
-        await interaction.message.edit(embed=build_queue_embed(), view=self)
 
-    @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary, custom_id="pug_leaderboard")
-    async def leaderboard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        also = [k for k in queued_sizes(uid) if k != self.size]
+        extra = f" Also queued for {', '.join(also)}." if also else ""
+        await interaction.response.send_message(
+            f"You joined the **{self.size}** queue ({len(queue)}/{needed}).{extra}",
+            ephemeral=True,
+        )
+        await interaction.message.edit(embed=build_queue_embed(), view=QueueView())
+
+
+class _LeaveAllButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Leave All",
+            style=discord.ButtonStyle.secondary,
+            custom_id="pug_leave",
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        left = leave_all_queues(interaction.user.id)
+        if not left:
+            await interaction.response.send_message("You're not in any queue.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"You left: **{', '.join(left)}**.", ephemeral=True
+        )
+        await interaction.message.edit(embed=build_queue_embed(), view=QueueView())
+
+
+class _LeaderboardButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Leaderboard",
+            style=discord.ButtonStyle.primary,
+            custom_id="pug_leaderboard",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
         embed, _, _ = build_normal_leaderboard("elo", 0)
-        await interaction.response.send_message(embed=embed, view=LeaderboardView("elo", 0), ephemeral=True)
+        await interaction.response.send_message(
+            embed=embed, view=LeaderboardView("elo", 0), ephemeral=True
+        )
+
+
+class QueueView(GuildView):
+    """One Join button per size, plus Leave All and the leaderboard.
+
+    Built with add_item rather than decorators so the sizes come from QUEUE_SIZES and
+    the button order matches the embed.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for size in QUEUE_SIZES:
+            self.add_item(_JoinButton(size))
+        self.add_item(_LeaveAllButton())
+        self.add_item(_LeaderboardButton())
 
 
 # ── Multi-stat leaderboard ───────────────────────────────────────────────────────

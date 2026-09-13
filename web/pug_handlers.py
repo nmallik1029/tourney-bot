@@ -7,7 +7,9 @@ from core.bot_instance import bot
 from core.guild_ctx import guild_context
 from pug.storage import (
     pug_data,
-    pug_queue,
+    queues_for,
+    queue_for,
+    leave_all_queues,
     pug_matches,
     save_pug_data,
     set_noadd,
@@ -69,7 +71,12 @@ async def handle_api_pug_dashboard(request: web.Request) -> web.Response:
                 "noadd_until": (ninfo or {}).get("until"),
             })
 
-        queue = [{"discord_id": str(pid), "name": _display_name(gid, pid)} for pid in pug_queue]
+        # Flattened for the dashboard, with the size each entry came from. A player in
+        # two queues appears twice, which is what the queue itself looks like.
+        queue = [
+            {"discord_id": str(pid), "name": _display_name(gid, pid), "size": key}
+            for key, q in queues_for().items() for pid in q
+        ]
 
         matches = []
         for m in pug_matches.values():
@@ -131,9 +138,14 @@ async def handle_api_pug_action(request: web.Request) -> web.Response:
                 return web.json_response({"error": "bot not in guild"}, status=500)
             from views.pug_queue import refresh_queue_embed
             from pug.match import pop_queue
-            # Force a pop with whoever is queued (min 2, for testing); else just refresh.
-            if len(pug_queue) >= 2:
-                await pop_queue(guild, bot, force=True)
+            # Force a pop on the biggest queue that has anyone in it (min 2, for
+            # testing); else just refresh. The dashboard has no size picker, so this
+            # picks rather than asking.
+            from pug.config import QUEUE_SIZES
+            for key in sorted(QUEUE_SIZES, key=lambda k: QUEUE_SIZES[k], reverse=True):
+                if len(queue_for(key)) >= 2:
+                    await pop_queue(guild, bot, force=True, size=key)
+                    break
             await refresh_queue_embed(bot)
             return web.json_response({"ok": True})
 
@@ -144,8 +156,7 @@ async def handle_api_pug_action(request: web.Request) -> web.Response:
 
         if action == "noadd":
             set_noadd(tid, True, reason=reason, until=_until(), admin=admin)
-            if tid in pug_queue:
-                pug_queue.remove(tid)
+            leave_all_queues(tid)
         elif action == "unnoadd":
             set_noadd(tid, False, admin=admin)
         else:

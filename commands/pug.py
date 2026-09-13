@@ -8,6 +8,8 @@ from core.bot_instance import bot
 from core.config import guild_object, REGION_NAMES
 from core.guild_views import GuildView
 from pug.config import (
+    QUEUE_SIZES,
+    DEFAULT_QUEUE_SIZE,
     is_pug_admin,
     is_pug_staff,
     ELO_START,
@@ -20,7 +22,9 @@ from pug.config import (
 )
 from pug.storage import (
     pug_data,
-    pug_queue,
+    queue_for,
+    queued_sizes,
+    leave_all_queues,
     pug_matches,
     save_pug_data,
     get_player,
@@ -269,18 +273,25 @@ async def pug_set_region(
     description="Force the queue to pop now with whoever is queued (min 2).",
 )
 @is_pug_staff()
-async def force_pop(interaction: discord.Interaction):
-    if len(pug_queue) < 2:
+@app_commands.describe(size="Which queue to pop (default 4v4)")
+@app_commands.choices(size=[
+    app_commands.Choice(name=key, value=key) for key in QUEUE_SIZES
+])
+async def force_pop(interaction: discord.Interaction, size: str = DEFAULT_QUEUE_SIZE):
+    if size not in QUEUE_SIZES:
+        size = DEFAULT_QUEUE_SIZE
+    queued = len(queue_for(size))
+    if queued < 2:
         await interaction.response.send_message(
-            f"Need at least 2 players in the queue to force a pop (currently {len(pug_queue)}).",
+            f"Need at least 2 players in the **{size}** queue to force a pop (currently {queued}).",
             ephemeral=True,
         )
         return
     await interaction.response.send_message(
-        f"Force-popping the queue with {len(pug_queue)} player(s).", ephemeral=True
+        f"Force-popping the **{size}** queue with {queued} player(s).", ephemeral=True
     )
     from pug.match import pop_queue
-    await pop_queue(interaction.guild, interaction.client, force=True)
+    await pop_queue(interaction.guild, interaction.client, force=True, size=size)
 
 
 @bot.tree.command(
@@ -362,7 +373,9 @@ async def check(interaction: discord.Interaction, user: discord.Member):
     format="Match format to simulate",
     captain="Optional: a real member forced as the 2nd captain (to test the draft chat-lock with a real player)",
 )
-@app_commands.choices(format=[app_commands.Choice(name="4v4", value="4v4")])
+@app_commands.choices(format=[
+    app_commands.Choice(name=key, value=key) for key in QUEUE_SIZES
+])
 async def simulate(
     interaction: discord.Interaction,
     format: app_commands.Choice[str],
@@ -373,13 +386,14 @@ async def simulate(
     match = await start_simulation(
         interaction.guild, interaction.client, interaction.user.id,
         second_captain_id=captain.id if captain else None,
+        size=format.value if format else DEFAULT_QUEUE_SIZE,
     )
     if captain and captain.id != interaction.user.id:
         note = f" You are one captain, {captain.mention} is the other."
     else:
         note = " You control both captains."
     await interaction.followup.send(
-        f"Simulation started in <#{match['text_channel_id']}>.{note}",
+        f"**{format.value}** simulation started in <#{match['text_channel_id']}>.{note}",
         ephemeral=True,
     )
 
@@ -409,8 +423,7 @@ def _until_from_hours(hours: float | None) -> float | None:
 @app_commands.describe(user="Player to no-add", reason="Reason (optional)", hours="Duration in hours (blank = permanent)")
 async def noadd(interaction: discord.Interaction, user: discord.Member, reason: str = "", hours: float = 0.0):
     set_noadd(user.id, True, reason=reason, until=_until_from_hours(hours), admin=interaction.user.display_name)
-    if user.id in pug_queue:
-        pug_queue.remove(user.id)
+    leave_all_queues(user.id)
     dur = f" for {hours}h" if hours and hours > 0 else " permanently"
     await interaction.response.send_message(
         f"No-added {user.mention}{dur}. Reason: {reason or 'unspecified'}.",
@@ -773,17 +786,18 @@ async def live(interaction: discord.Interaction):
 @is_pug_staff()
 @app_commands.describe(user="The member to remove from the queue")
 async def remove(interaction: discord.Interaction, user: discord.Member):
-    if user.id not in pug_queue:
+    was_in = queued_sizes(user.id)
+    if not was_in:
         await interaction.response.send_message(
-            f"{user.mention} isn't in the queue.", ephemeral=True,
+            f"{user.mention} isn't in any queue.", ephemeral=True,
             allowed_mentions=discord.AllowedMentions.none(),
         )
         return
-    pug_queue.remove(user.id)
+    leave_all_queues(user.id)
     from views.pug_queue import refresh_queue_embed
     await refresh_queue_embed(interaction.client)
     await interaction.response.send_message(
-        f"Removed {user.mention} from the queue.", ephemeral=True,
+        f"Removed {user.mention} from: **{', '.join(was_in)}**.", ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
 

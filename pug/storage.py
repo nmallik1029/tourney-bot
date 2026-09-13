@@ -4,7 +4,7 @@ import secrets
 import time
 from pathlib import Path
 
-from pug.config import ELO_START
+from pug.config import ELO_START, QUEUE_SIZES, DEFAULT_QUEUE_SIZE
 from core.config import SERVER_ID
 from core.guild_ctx import current_guild
 
@@ -209,7 +209,7 @@ def save_clan_cache(cache: dict):
 # ── Multi-guild state ────────────────────────────────────────────────────────────
 # Persisted, keyed by guild id (str). In-memory live state is keyed by guild id (int).
 pug_store: dict[str, dict] = load_pug_store()
-_queues: dict[int, list[int]] = {}      # guild_id -> FIFO of queued Discord ids
+_queues: dict[int, dict[str, list[int]]] = {}   # guild_id -> {"4v4": [discord ids], ...}
 _matches: dict[int, dict[str, dict]] = {}  # guild_id -> {match_key: live match}
 _sims: dict[int, dict[int, dict]] = {}  # guild_id -> {fake_id: fake player}
 
@@ -226,9 +226,51 @@ def gdata(guild_id: int | None = None) -> dict:
     return gd
 
 
-def queue_for(guild_id: int | None = None) -> list[int]:
+def queues_for(guild_id: int | None = None) -> dict[str, list[int]]:
+    """Every size's FIFO for a guild, in QUEUE_SIZES order. Missing sizes are created,
+    so a size added to the config later just appears rather than needing a migration."""
     gid = current_guild() if guild_id is None else int(guild_id)
-    return _queues.setdefault(gid, [])
+    table = _queues.setdefault(gid, {})
+    for key in QUEUE_SIZES:
+        table.setdefault(key, [])
+    return table
+
+
+def queue_for(size: str = DEFAULT_QUEUE_SIZE, guild_id: int | None = None) -> list[int]:
+    """One size's FIFO. Unknown sizes fall back to the default rather than raising, so a
+    stale button custom_id cannot take the queue down."""
+    table = queues_for(guild_id)
+    # `is None`, not `or`: an empty queue is falsy, and `or` would hand back the 4v4
+    # list every time a queue happened to be empty.
+    queue = table.get(size)
+    return table[DEFAULT_QUEUE_SIZE] if queue is None else queue
+
+
+def queued_sizes(discord_id: int, guild_id: int | None = None) -> list[str]:
+    """Which queues this player is sitting in."""
+    return [key for key, q in queues_for(guild_id).items() if discord_id in q]
+
+
+def leave_all_queues(discord_id: int, guild_id: int | None = None) -> list[str]:
+    """Drop a player from every queue. Returns the sizes they were actually in.
+
+    Used both by the Leave button and by a pop: a player taken for a 4v4 must not be
+    left sitting in 2v2, or the next pop would pull them into a second live match.
+    """
+    left = []
+    for key, q in queues_for(guild_id).items():
+        if discord_id in q:
+            q.remove(discord_id)
+            left.append(key)
+    return left
+
+
+def total_queued(guild_id: int | None = None) -> int:
+    """Distinct players waiting, counting someone in two queues once."""
+    seen: set[int] = set()
+    for q in queues_for(guild_id).values():
+        seen.update(q)
+    return len(seen)
 
 
 def matches_for(guild_id: int | None = None) -> dict[str, dict]:
@@ -307,10 +349,13 @@ class _GuildDictProxy:
 
 
 class _GuildListProxy:
-    """List-like view of the current guild's in-memory queue."""
+    """List-like view of one of the current guild's queues."""
+
+    def __init__(self, size: str = DEFAULT_QUEUE_SIZE):
+        self._size = size
 
     def _l(self) -> list:
-        return queue_for()
+        return queue_for(self._size)
 
     def __len__(self):
         return len(self._l())
@@ -402,7 +447,10 @@ class _GuildSimProxy:
 # Proxies resolve to the guild bound in the current context. Existing imports
 # (`from pug.storage import pug_data, pug_queue, pug_matches, sim_players`) are unchanged.
 pug_data = _GuildDictProxy()
-pug_queue = _GuildListProxy()
+# One proxy per size. There is deliberately no bare `pug_queue` any more: every caller
+# has to say which queue it means, so a missed call site is an import error rather than
+# a silent write to the 4v4 queue.
+pug_queues: dict[str, _GuildListProxy] = {size: _GuildListProxy(size) for size in QUEUE_SIZES}
 pug_matches = _GuildMatchProxy()
 sim_players = _GuildSimProxy()
 

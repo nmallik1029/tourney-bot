@@ -12,6 +12,9 @@ from core.guild_ctx import guild_context
 from views.pickban import HostClientView, WEBHOOK_URL, MAP_IDS
 from pug.config import (
     MATCH_SIZE,
+    QUEUE_SIZES,
+    DEFAULT_QUEUE_SIZE,
+    size_key,
     CHECKIN_SECONDS,
     REPING_INTERVAL,
     BRAND,
@@ -19,7 +22,9 @@ from pug.config import (
 )
 from pug.storage import (
     pug_data,
-    pug_queue,
+    queue_for,
+    queues_for,
+    leave_all_queues,
     pug_matches,
     sim_players,
     get_elo,
@@ -200,10 +205,12 @@ async def abort_checkin(match: dict, bot, user: discord.Member):
         except discord.HTTPException:
             pass
 
-    # Checked-in players go back to the queue (appended, so anyone already waiting keeps priority)
+    # Checked-in players go back to the queue this match came from (appended, so anyone
+    # already waiting keeps priority).
+    origin = queue_for(size_key(match.get("size", MATCH_SIZE)))
     for pid in match.get("players", []):
-        if pid in match.get("checked_in", set()) and pid not in pug_queue:
-            pug_queue.append(pid)
+        if pid in match.get("checked_in", set()) and pid not in origin:
+            origin.append(pid)
 
     await _return_players_to_origin(match, bot)
     await _cleanup_channels(match, bot)
@@ -255,32 +262,43 @@ async def force_result(match: dict, winner_team_num: int, bot, admin: discord.Me
 
 # pop
 async def maybe_autopop(guild: discord.Guild, bot):
-    """Pop full matches (FIFO) after players were returned to the queue all at once
-    (e.g. an aborted/cancelled game). Leftovers (<8) stay queued for the next game."""
+    """Pop whatever is full after players were returned all at once (e.g. an aborted
+    game). Leftovers stay queued. Checked in size order so a returning 4v4 refills a
+    4v4 before its players get pulled into a smaller game."""
     if not guild:
         return
-    while len(pug_queue) >= MATCH_SIZE:
-        await pop_queue(guild, bot)
+    for key in sorted(QUEUE_SIZES, key=lambda k: QUEUE_SIZES[k], reverse=True):
+        while len(queue_for(key)) >= QUEUE_SIZES[key]:
+            await pop_queue(guild, bot, size=key)
 
 
-async def pop_queue(guild: discord.Guild, bot, force: bool = False):
-    """Start a check-in match. Normally requires a full MATCH_SIZE queue; a forced
-    pop (admin dashboard) starts with whoever is queued (min 2, for testing)."""
+async def pop_queue(guild: discord.Guild, bot, force: bool = False,
+                    size: str = DEFAULT_QUEUE_SIZE):
+    """Start a check-in match from one size's queue. Normally requires that queue to be
+    full; a forced pop (admin dashboard) starts with whoever is in it (min 2, for
+    testing)."""
+    queue = queue_for(size)
+    needed = QUEUE_SIZES.get(size, MATCH_SIZE)
+
     # Safety net: never pull anyone already in a live match into a new one, even if
     # they somehow slipped into the queue.
-    for uid in [u for u in pug_queue if in_active_match(u)]:
-        pug_queue.remove(uid)
+    for uid in [u for u in queue if in_active_match(u)]:
+        queue.remove(uid)
 
     if force:
-        size = len(pug_queue)
-        if size < 2:
+        count = len(queue)
+        if count < 2:
             return
     else:
-        if len(pug_queue) < MATCH_SIZE:
+        if len(queue) < needed:
             return
-        size = MATCH_SIZE
+        count = needed
 
-    players = [pug_queue.pop(0) for _ in range(size)]
+    players = [queue.pop(0) for _ in range(count)]
+    # A player may have been sitting in several queues; this match claims them, so drop
+    # them from the rest or the next pop would put them in a second live match.
+    for pid in players:
+        leave_all_queues(pid)
     number = next_queue_number()
     name = f"queue-{number:04d}"
 
@@ -306,7 +324,7 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
         "team1_vc_id": None,
         "team2_vc_id": None,
         "players": players,
-        "size": size,
+        "size": count,
         "names": names,
         "checked_in": set(),
         "origin_vc": {},   # pid -> VC they were in before the match (to return them)
@@ -381,7 +399,7 @@ async def pop_queue(guild: discord.Guild, bot, force: bool = False):
 SIM_FAKE_BASE = 900_000_000
 
 
-async def start_simulation(guild: discord.Guild, bot, controller_id: int, second_captain_id: int | None = None):
+async def start_simulation(guild: discord.Guild, bot, controller_id: int, second_captain_id: int | None = None, size: str = DEFAULT_QUEUE_SIZE):
     """Spin up a full 4v4 match with fake players + the controller, auto-checked-in,
     skipping the check-in phase. The controller can act as either captain.
 
@@ -401,10 +419,12 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int, second
     if second and second.id == controller_id:
         second = None  # can't co-captain with yourself
 
-    # Real slots (controller [+ optional real 2nd captain]); fakes fill the rest up to 8.
+    # Real slots (controller [+ optional real 2nd captain]); fakes fill the rest out to
+    # whatever the simulated size needs.
+    total = QUEUE_SIZES.get(size, MATCH_SIZE)
     real_players = [controller_id] + ([second.id] if second else [])
     fake_ids = []
-    for i in range(1, 9 - len(real_players)):
+    for i in range(1, total + 1 - len(real_players)):
         fid = SIM_FAKE_BASE + i
         sim_players[fid] = {
             "elo": random.randint(800, 1400),
@@ -456,7 +476,7 @@ async def start_simulation(guild: discord.Guild, bot, controller_id: int, second
         "team1_vc_id": None,
         "team2_vc_id": None,
         "players": players,
-        "size": 8,
+        "size": total,
         "names": names,
         "checked_in": set(players),   # everyone auto-checked-in
         "origin_vc": {},
@@ -583,8 +603,10 @@ async def checkin_loop(match: dict, bot):
             # Backfill from the queue
             size = match.get("size", MATCH_SIZE)
             guild = bot.get_guild(match["guild_id"])
-            while len(match["players"]) < size and pug_queue:
-                npid = pug_queue.pop(0)
+            origin = queue_for(size_key(size))
+            while len(match["players"]) < size and origin:
+                npid = origin.pop(0)
+                leave_all_queues(npid)
                 match["players"].append(npid)
                 nm = guild.get_member(npid) if guild else None
                 match["names"][npid] = primary_username(npid, nm.display_name if nm else str(npid))
@@ -631,9 +653,10 @@ async def dissolve_match(match: dict, bot, reason: str = ""):
     """Return checked-in players to the queue and tear down the channels."""
     ch = bot.get_channel(match["text_channel_id"])
     returning = [p for p in match["players"] if p in match["checked_in"]]
+    origin = queue_for(size_key(match.get("size", MATCH_SIZE)))
     for p in returning:
-        if p not in pug_queue:
-            pug_queue.append(p)
+        if p not in origin:
+            origin.append(p)
 
     if ch and returning:
         try:
