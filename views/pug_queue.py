@@ -48,9 +48,9 @@ def build_queue_embed() -> discord.Embed:
             value = "\n".join(lines)
         else:
             value = "*Empty*"
-        embed.add_field(name=f"{key} Queue \u2014 {len(queued)}/{needed}", value=value, inline=False)
+        embed.add_field(name=f"{key} Queue ({len(queued)}/{needed})", value=value, inline=False)
 
-    embed.set_footer(text="Join as many sizes as you like. Click the same button again to leave.")
+    embed.set_footer(text="Clicking the join button(s) of whatever queue(s) you're in will remove you.")
     return embed
 
 
